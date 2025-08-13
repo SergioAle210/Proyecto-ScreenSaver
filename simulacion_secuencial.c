@@ -200,7 +200,7 @@ int main(int argc, char **argv)
     int iterations = (argc > 1) ? atoi(argv[1]) : 4;
     int numVehicles = (argc > 2) ? atoi(argv[2]) : 20;
     int numLights = (argc > 3) ? atoi(argv[3]) : 4;
-    int sleep_between = 0; // 1: pausa de 1s entre iteraciones
+    int sleep_between = 1; // 1: pausa de 1s entre iteraciones
 
     srand((unsigned)time(NULL)); // resultados diferentes en cada ejecución
 
