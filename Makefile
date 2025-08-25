@@ -1,19 +1,8 @@
 # Makefile — C (C11) + SDL2 + OpenMP, Linux y Windows (Git Bash/MSYS2)
-# ---------------------------------------------------------------
-# Uso:
-#   make                # compila seq y omp
-#   make seq            # solo secuencial
-#   make omp            # solo OpenMP
-#   make run_seq        # ejecuta secuencial con args por defecto
-#   make run_omp        # ejecuta paralelo con args por defecto
-#   SDLPREFIX=... make  # fuerza ruta SDL2 en Windows si no usas MSYS2
-#
-# En Windows (Git Bash):
-#   - Si tienes MSYS2: se detecta MINGW64/UCRT64/CLANG64 y usa /mingw64, /ucrt64 o /clang64.
-#   - Si usas SDL2 "standalone" (zip): define SDLPREFIX a la carpeta x86_64-w64-mingw32.
 
-UNAME_S := $(shell uname -s 2>/dev/null)
+UNAME_S  := $(shell uname -s 2>/dev/null)
 MSYS_SYS := $(MSYSTEM)
+PKGCONF  := $(shell command -v pkg-config 2>/dev/null)
 
 CC := gcc
 CFLAGS_BASE := -O3 -std=c11 -Wall -Wextra -Wno-unknown-pragmas
@@ -28,9 +17,9 @@ OMP_BIN := $(BIN_DIR)/screensaver4d_omp
 
 # Extensión .exe en Windows
 ifeq ($(findstring MINGW,$(UNAME_S))$(findstring MINGW,$(MSYS_SYS)),MINGW)
-	EXEEXT := .exe
+  EXEEXT := .exe
 else
-	EXEEXT :=
+  EXEEXT :=
 endif
 SEQ_BIN := $(SEQ_BIN)$(EXEEXT)
 OMP_BIN := $(OMP_BIN)$(EXEEXT)
@@ -39,34 +28,40 @@ OBJS_SEQ := $(patsubst src/%.c,$(OBJ_DIR_SEQ)/%.o,$(SRC))
 OBJS_OMP := $(patsubst src/%.c,$(OBJ_DIR_OMP)/%.o,$(SRC))
 
 # -------------------------
-# Detección SDL2 por plataforma
+# SDL2 por plataforma
 # -------------------------
-# Linux: usa pkg-config
 ifeq ($(UNAME_S),Linux)
-	SDLCFLAGS := $(shell pkg-config --cflags sdl2)
-	SDLLIBS   := $(shell pkg-config --libs sdl2)
+  # Ubuntu/Debian: usa pkg-config si existe; si no, fallback
+  ifeq ($(PKGCONF),)
+    SDLCFLAGS := -I/usr/include/SDL2 -D_REENTRANT
+    SDLLIBS   := -lSDL2
+  else
+    SDLCFLAGS := $(shell pkg-config --cflags sdl2)
+    SDLLIBS   := $(shell pkg-config --libs sdl2)
+  endif
+  LDLIBS_EXTRA := -lm
 else
-	# Windows (MSYS2/Git Bash)
-	# 1) Si el usuario define SDLPREFIX, usamos esa ruta (zip standalone).
-	#    Ej: SDLPREFIX=C:/libs/SDL2/x86_64-w64-mingw32
-	ifdef SDLPREFIX
-		SDLCFLAGS := -I$(SDLPREFIX)/include -Dmain=SDL_main
-		SDLLIBS   := -L$(SDLPREFIX)/lib -lmingw32 -lSDL2main -lSDL2
-		SDL2_DLL  := $(SDLPREFIX)/bin/SDL2.dll
-	else
-		# 2) Si no define SDLPREFIX, intentamos MSYS2 según MSYSTEM
-		#    MINGW64 -> /mingw64, UCRT64 -> /ucrt64, CLANG64 -> /clang64
-		ifneq (,$(findstring UCRT64,$(MSYS_SYS)))
-			_SDLPFX := /ucrt64
-		else ifneq (,$(findstring CLANG64,$(MSYS_SYS)))
-			_SDLPFX := /clang64
-		else
-			_SDLPFX := /mingw64
-		endif
-		SDLCFLAGS := -I$(_SDLPFX)/include -Dmain=SDL_main
-		SDLLIBS   := -L$(_SDLPFX)/lib -lmingw32 -lSDL2main -lSDL2
-		SDL2_DLL  := $(_SDLPFX)/bin/SDL2.dll
-	endif
+  # Windows (Git Bash/MSYS2)
+  # Si defines SDLPREFIX (zip standalone), se usa esa ruta:
+  #   make SDLPREFIX=C:/libs/SDL2/x86_64-w64-mingw32
+  ifdef SDLPREFIX
+    SDLCFLAGS := -I$(SDLPREFIX)/include -Dmain=SDL_main
+    SDLLIBS   := -L$(SDLPREFIX)/lib -lmingw32 -lSDL2main -lSDL2
+    SDL2_DLL  := $(SDLPREFIX)/bin/SDL2.dll
+  else
+    # Prefijos habituales de MSYS2 (elige según MSYSTEM)
+    ifneq (,$(findstring UCRT64,$(MSYS_SYS)))
+      _SDLPFX := /ucrt64
+    else ifneq (,$(findstring CLANG64,$(MSYS_SYS)))
+      _SDLPFX := /clang64
+    else
+      _SDLPFX := /mingw64
+    endif
+    SDLCFLAGS := -I$(_SDLPFX)/include -Dmain=SDL_main
+    SDLLIBS   := -L$(_SDLPFX)/lib -lmingw32 -lSDL2main -lSDL2
+    SDL2_DLL  := $(_SDLPFX)/bin/SDL2.dll
+  endif
+  LDLIBS_EXTRA :=
 endif
 
 # -------------------------
@@ -82,8 +77,7 @@ $(OBJ_DIR_SEQ)/%.o: src/%.c
 	$(CC) $(CFLAGS_BASE) $(SDLCFLAGS) -c $< -o $@
 
 seq: $(OBJS_SEQ)
-	$(CC) $(CFLAGS_BASE) $(SDLCFLAGS) $(OBJS_SEQ) $(SDLLIBS) -o $(SEQ_BIN)
-	@# Copiar SDL2.dll junto a los binarios si existe (Windows)
+	$(CC) $(CFLAGS_BASE) $(SDLCFLAGS) $(OBJS_SEQ) $(SDLLIBS) $(LDLIBS_EXTRA) -o $(SEQ_BIN)
 	@if [ -f "$(SDL2_DLL)" ]; then cp -f "$(SDL2_DLL)" "$(BIN_DIR)/" || true; fi
 
 # --- Paralelo (con OpenMP) ---
@@ -91,19 +85,18 @@ $(OBJ_DIR_OMP)/%.o: src/%.c
 	$(CC) $(CFLAGS_BASE) -fopenmp $(SDLCFLAGS) -c $< -o $@
 
 omp: $(OBJS_OMP)
-	$(CC) $(CFLAGS_BASE) -fopenmp $(SDLCFLAGS) $(OBJS_OMP) $(SDLLIBS) -o $(OMP_BIN)
-	@# Copiar SDL2.dll junto a los binarios si existe (Windows)
+	$(CC) $(CFLAGS_BASE) -fopenmp $(SDLCFLAGS) $(OBJS_OMP) $(SDLLIBS) $(LDLIBS_EXTRA) -o $(OMP_BIN)
 	@if [ -f "$(SDL2_DLL)" ]; then cp -f "$(SDL2_DLL)" "$(BIN_DIR)/" || true; fi
 
 # -------------------------
 # Atajos de ejecución
 # -------------------------
-RUN_N      ?= 2000
-RUN_W      ?= 1280
-RUN_H      ?= 720
-RUN_SEED   ?= 42
+RUN_N ?= 2000
+RUN_W ?= 1280
+RUN_H ?= 720
+RUN_SEED ?= 42
 RUN_FPSCAP ?= 0
-RUN_THREADS?= 8
+RUN_THREADS ?= 8
 
 run_seq: seq
 	$(SEQ_BIN) $(RUN_N) $(RUN_W) $(RUN_H) --seed $(RUN_SEED) --fpscap $(RUN_FPSCAP)
