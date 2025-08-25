@@ -8,7 +8,7 @@ CC := gcc
 CFLAGS_BASE := -O3 -std=c11 -Wall -Wextra -Wno-unknown-pragmas
 LDFLAGS :=
 
-SRC := src/main.c src/sim.c
+SRC := src/main.c src/sim.c src/tesseract.c
 OBJ_DIR_SEQ := build/obj_seq
 OBJ_DIR_OMP := build/obj_omp
 BIN_DIR := build
@@ -31,7 +31,6 @@ OBJS_OMP := $(patsubst src/%.c,$(OBJ_DIR_OMP)/%.o,$(SRC))
 # SDL2 por plataforma
 # -------------------------
 ifeq ($(UNAME_S),Linux)
-  # Ubuntu/Debian: usa pkg-config si existe; si no, fallback
   ifeq ($(PKGCONF),)
     SDLCFLAGS := -I/usr/include/SDL2 -D_REENTRANT
     SDLLIBS   := -lSDL2
@@ -42,14 +41,11 @@ ifeq ($(UNAME_S),Linux)
   LDLIBS_EXTRA := -lm
 else
   # Windows (Git Bash/MSYS2)
-  # Si defines SDLPREFIX (zip standalone), se usa esa ruta:
-  #   make SDLPREFIX=C:/libs/SDL2/x86_64-w64-mingw32
   ifdef SDLPREFIX
     SDLCFLAGS := -I$(SDLPREFIX)/include -Dmain=SDL_main
     SDLLIBS   := -L$(SDLPREFIX)/lib -lmingw32 -lSDL2main -lSDL2
     SDL2_DLL  := $(SDLPREFIX)/bin/SDL2.dll
   else
-    # Prefijos habituales de MSYS2 (elige según MSYSTEM)
     ifneq (,$(findstring UCRT64,$(MSYS_SYS)))
       _SDLPFX := /ucrt64
     else ifneq (,$(findstring CLANG64,$(MSYS_SYS)))
@@ -104,9 +100,6 @@ run_seq: seq
 run_omp: omp
 	$(OMP_BIN) $(RUN_N) $(RUN_W) $(RUN_H) --seed $(RUN_SEED) --fpscap $(RUN_FPSCAP) --threads $(RUN_THREADS)
 
-# -------------------------
-# Limpieza
-# -------------------------
 clean:
 	rm -rf $(BIN_DIR)
 

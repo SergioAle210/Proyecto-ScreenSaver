@@ -9,8 +9,8 @@ typedef struct {
 } Particle;
 
 typedef struct {
-    float x, y, r;   // posición en pantalla + tamaño
-    uint8_t r8, g8, b8, a8; // color
+    float x, y, r;            // posición + tamaño en pixeles
+    uint8_t r8, g8, b8, a8;   // color
 } DrawItem;
 
 void init_particles(Particle* p, int N, unsigned int seed);

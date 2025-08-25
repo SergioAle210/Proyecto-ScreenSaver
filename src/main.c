@@ -6,6 +6,7 @@
 #include <math.h>
 #include <time.h>
 #include "sim.h"
+#include "tesseract.h"
 
 #ifdef _OPENMP
   #include <omp.h>
@@ -13,20 +14,22 @@
 
 #include <SDL2/SDL.h>
 
-static void set_window_title_fps(SDL_Window* win, float fps) {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "Screensaver 4D (C)  |  FPS: %.1f", fps);
+enum Mode { MODE_PARTICLES=0, MODE_TESSERACT=1 };
+
+static void set_window_title_fps(SDL_Window* win, float fps, int mode) {
+    char buf[160];
+    snprintf(buf, sizeof(buf), "Screensaver 4D (C) [%s]  |  FPS: %.1f",
+             mode==MODE_TESSERACT? "tesseract":"particles", fps);
     SDL_SetWindowTitle(win, buf);
 }
 
 static int parse_args(int argc, char** argv, int* N, int* width, int* height,
-                      int* threads, unsigned int* seed, int* fpscap)
+                      int* threads, unsigned int* seed, int* fpscap, int* mode)
 {
     if (argc < 2) return 0;
-    *N = atoi(argv[1]);
-    if (*N < 1) *N = 1;
+    *N = atoi(argv[1]); if (*N < 1) *N = 1;
     *width = 1280; *height = 720;
-    *threads = -1; *seed = 12345u; *fpscap = 0;
+    *threads = -1; *seed = 12345u; *fpscap = 0; *mode = MODE_PARTICLES;
 
     if (argc >= 4) {
         *width  = atoi(argv[2]); if (*width  < 640) *width  = 640;
@@ -36,16 +39,21 @@ static int parse_args(int argc, char** argv, int* N, int* width, int* height,
         if (strcmp(argv[i], "--threads") == 0 && i+1 < argc) { *threads = atoi(argv[++i]); }
         else if (strcmp(argv[i], "--seed") == 0 && i+1 < argc) { *seed = (unsigned int)strtoul(argv[++i], NULL, 10); }
         else if (strcmp(argv[i], "--fpscap") == 0 && i+1 < argc) { *fpscap = atoi(argv[++i]); }
+        else if (strcmp(argv[i], "--mode") == 0 && i+1 < argc) {
+            ++i;
+            if (strcmp(argv[i], "tesseract")==0) *mode = MODE_TESSERACT;
+            else *mode = MODE_PARTICLES;
+        }
     }
     return 1;
 }
 
 int main(int argc, char** argv)
 {
-    int N=0, W=1280, H=720, threads=-1, fpscap=0;
+    int N=0, W=1280, H=720, threads=-1, fpscap=0, mode=MODE_PARTICLES;
     unsigned int seed=12345u;
-    if (!parse_args(argc, argv, &N, &W, &H, &threads, &seed, &fpscap)) {
-        printf("Uso: %s N [width height] [--seed S] [--fpscap X] [--threads T]\\n", argv[0]);
+    if (!parse_args(argc, argv, &N, &W, &H, &threads, &seed, &fpscap, &mode)) {
+        printf("Uso: %s N [width height] [--seed S] [--fpscap X] [--threads T] [--mode particles|tesseract]\n", argv[0]);
         return 1;
     }
 
@@ -54,7 +62,7 @@ int main(int argc, char** argv)
 #endif
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
-        fprintf(stderr, "SDL_Init error: %s\\n", SDL_GetError());
+        fprintf(stderr, "SDL_Init error: %s\n", SDL_GetError());
         return 1;
     }
 
@@ -64,34 +72,32 @@ int main(int argc, char** argv)
         W, H, SDL_WINDOW_SHOWN
     );
     if (!window) {
-        fprintf(stderr, "SDL_CreateWindow error: %s\\n", SDL_GetError());
+        fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
 
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer) {
-        fprintf(stderr, "SDL_CreateRenderer error: %s\\n", SDL_GetError());
+        fprintf(stderr, "SDL_CreateRenderer error: %s\n", SDL_GetError());
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
 
-    // --- Estado ---
+    // Estado para partículas (se usa sólo en MODE_PARTICLES)
     Particle* particles = (Particle*)malloc(sizeof(Particle) * (size_t)N);
     DrawItem* drawbuf   = (DrawItem*)malloc(sizeof(DrawItem) * (size_t)N);
     if (!particles || !drawbuf) {
-        fprintf(stderr, "Error: memoria insuficiente\\n");
+        fprintf(stderr, "Error: memoria insuficiente\n");
         free(particles); free(drawbuf);
         SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); SDL_Quit();
         return 1;
     }
-
     init_particles(particles, N, seed);
 
     const float focal4 = 2.0f;
     const float focal3 = 2.0f;
-    int running = 1;
 
     Uint64 perf_freq = SDL_GetPerformanceFrequency();
     Uint64 t_prev = SDL_GetPerformanceCounter();
@@ -100,12 +106,16 @@ int main(int argc, char** argv)
     int fps_count = 0;
     float fps_smoothed = 0.0f;
     Uint32 frame_ticks_start = SDL_GetTicks();
+    int running = 1;
 
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = 0;
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) running = 0;
+            if (e.type == SDL_KEYDOWN) {
+                if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
+                if (e.key.keysym.sym == SDLK_t) mode = (mode==MODE_PARTICLES? MODE_TESSERACT: MODE_PARTICLES);
+            }
         }
 
         Uint64 t_now = SDL_GetPerformanceCounter();
@@ -114,30 +124,32 @@ int main(int argc, char** argv)
         if (dt > 0.1) dt = 0.1;
         float t = (float)(SDL_GetTicks() * 0.001f);
 
-        update_particles((float)dt, particles, drawbuf, N, W, H, t, focal4, focal3);
-
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(renderer, 5, 8, 13, 255);
         SDL_RenderClear(renderer);
 
-        for (int i=0; i<N; ++i) {
-            SDL_SetRenderDrawColor(renderer, drawbuf[i].r8, drawbuf[i].g8, drawbuf[i].b8, drawbuf[i].a8);
-            SDL_FRect rect;
-            rect.x = drawbuf[i].x - drawbuf[i].r * 0.5f;
-            rect.y = drawbuf[i].y - drawbuf[i].r * 0.5f;
-            rect.w = drawbuf[i].r;
-            rect.h = drawbuf[i].r;
-            SDL_RenderFillRectF(renderer, &rect);
+        if (mode == MODE_PARTICLES) {
+            update_particles((float)dt, particles, drawbuf, N, W, H, t, focal4, focal3);
+            for (int i=0; i<N; ++i) {
+                SDL_SetRenderDrawColor(renderer, drawbuf[i].r8, drawbuf[i].g8, drawbuf[i].b8, drawbuf[i].a8);
+                SDL_FRect rect;
+                rect.x = drawbuf[i].x - drawbuf[i].r * 0.5f;
+                rect.y = drawbuf[i].y - drawbuf[i].r * 0.5f;
+                rect.w = drawbuf[i].r;
+                rect.h = drawbuf[i].r;
+                SDL_RenderFillRectF(renderer, &rect);
+            }
+        } else {
+            render_tesseract(renderer, W, H, t, focal4, focal3);
         }
+
         SDL_RenderPresent(renderer);
 
-        acc_time += dt;
-        fps_acc += 1.0;
-        ++fps_count;
+        acc_time += dt; fps_acc += 1.0; ++fps_count;
         if (acc_time >= 0.5) {
             float fps = (float)(fps_acc / acc_time);
             fps_smoothed = 0.7f * fps_smoothed + 0.3f * fps;
-            set_window_title_fps(window, fps_smoothed);
+            set_window_title_fps(window, fps_smoothed, mode);
             acc_time = 0.0; fps_acc = 0.0; fps_count = 0;
         }
 
