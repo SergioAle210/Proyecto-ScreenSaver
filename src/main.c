@@ -85,12 +85,11 @@ int main(int argc, char** argv)
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer) {
         fprintf(stderr, "SDL_CreateRenderer error: %s\n", SDL_GetError());
-        SDL_DestroyWindow(window);
-        SDL_Quit();
+        SDL_DestroyWindow(window); SDL_Quit();
         return 1;
     }
 
-    // Estado para partículas
+    // Estado de partículas (solo se usa en MODE_PARTICLES)
     Particle* particles = (Particle*)malloc(sizeof(Particle) * (size_t)N);
     DrawItem* drawbuf   = (DrawItem*)malloc(sizeof(DrawItem) * (size_t)N);
     if (!particles || !drawbuf) {
@@ -102,15 +101,14 @@ int main(int argc, char** argv)
     init_particles(particles, N, seed);
 
     // Cámara 3D para tesseracto
-    Camera3 cam = {0.0f, 0.0f, -5.0f, 0.0f, 0.0f, 70.0f}; // pos Z negativa mirando hacia +Z
+    Camera3 cam = {0.0f, 0.0f, -5.0f, 0.0f, 0.0f, 70.0f};
     bool mouse_captured = false;
 
     const float focal4 = 2.0f; // perspectiva 4D
     Uint64 perf_freq = SDL_GetPerformanceFrequency();
     Uint64 t_prev = SDL_GetPerformanceCounter();
-    double acc_time = 0.0, fps_acc = 0.0;
-    int fps_count = 0; float fps_smoothed = 0.0f;
-    Uint32 frame_ticks_start = SDL_GetTicks();
+
+    float fps_smoothed = 0.0f;
     int running = 1;
 
     while (running) {
@@ -129,7 +127,7 @@ int main(int argc, char** argv)
                 }
             }
             if (e.type == SDL_MOUSEMOTION && mouse_captured) {
-                const float sens = 0.0025f; // sensibilidad
+                const float sens = 0.0025f;
                 cam.yaw   += e.motion.xrel * sens;
                 cam.pitch += e.motion.yrel * sens;
                 if (cam.pitch >  1.55f) cam.pitch =  1.55f;
@@ -153,7 +151,6 @@ int main(int argc, char** argv)
         float spd = 3.0f; if (kb[SDL_SCANCODE_LSHIFT]) spd *= 3.0f;
         float move = spd * (float)dt;
         float cyaw = cosf(cam.yaw), syaw = sinf(cam.yaw);
-        // vectores en plano XZ
         float fwdx =  syaw, fwdz = cyaw;
         float rgtx =  cyaw, rgtz = -syaw;
 
@@ -170,7 +167,7 @@ int main(int argc, char** argv)
         SDL_RenderClear(renderer);
 
         if (mode == MODE_PARTICLES) {
-            const float focal3 = 2.0f; // se usa sólo en partículas
+            const float focal3 = 2.0f;
             update_particles((float)dt, particles, drawbuf, N, W, H, t, focal4, focal3);
             for (int i=0; i<N; ++i) {
                 SDL_SetRenderDrawColor(renderer, drawbuf[i].r8, drawbuf[i].g8, drawbuf[i].b8, drawbuf[i].a8);
@@ -184,7 +181,7 @@ int main(int argc, char** argv)
         }
         SDL_RenderPresent(renderer);
 
-        // FPS
+        // FPS (0.5 s de ventana)
         static double acc=0; static int frames=0; acc+=dt; frames++;
         if (acc >= 0.5) {
             float fps = (float)(frames/acc);
@@ -193,9 +190,10 @@ int main(int argc, char** argv)
             acc=0; frames=0;
         }
 
+        // Cap de FPS (opcional)
         if (fpscap > 0) {
-            Uint32 now = SDL_GetTicks();
             static Uint32 last = 0;
+            Uint32 now = SDL_GetTicks();
             Uint32 target_ms = (Uint32)((1000.0f/(float)fpscap)+0.5f);
             if (now - last < target_ms) SDL_Delay(target_ms - (now - last));
             last = SDL_GetTicks();
