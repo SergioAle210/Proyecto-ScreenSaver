@@ -53,7 +53,7 @@ void init_particles(Particle* p, int N, unsigned int seed) {
         q.vz = fv3 * 1.4f - 0.7f;
         q.vw = fv4 * 1.4f - 0.7f;
         q.hue = (float)rand()/(float)RAND_MAX;
-        q.radius = 1.5f + 1.5f * ((float)rand()/(float)RAND_MAX;
+        q.radius = 1.5f + 1.5f * ((float)rand()/(float)RAND_MAX);
         p[i] = q;
     }
 }
