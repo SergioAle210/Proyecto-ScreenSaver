@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <stdbool.h>
 #include "sim.h"
 #include "tesseract.h"
 
@@ -16,10 +17,14 @@
 
 enum Mode { MODE_PARTICLES=0, MODE_TESSERACT=1 };
 
-static void set_window_title_fps(SDL_Window* win, float fps, int mode) {
-    char buf[160];
-    snprintf(buf, sizeof(buf), "Screensaver 4D (C) [%s]  |  FPS: %.1f",
-             mode==MODE_TESSERACT? "tesseract":"particles", fps);
+static void set_window_title_fps(SDL_Window* win, float fps, int mode, const Camera3* cam) {
+    char buf[256];
+    if (mode==MODE_TESSERACT)
+        snprintf(buf, sizeof(buf),
+            "Screensaver 4D (C) [tesseract]  |  FPS: %.1f  |  FOV: %.0f  |  pos(%.1f,%.1f,%.1f)",
+            fps, cam->fov_deg, cam->px, cam->py, cam->pz);
+    else
+        snprintf(buf, sizeof(buf), "Screensaver 4D (C) [particles]  |  FPS: %.1f", fps);
     SDL_SetWindowTitle(win, buf);
 }
 
@@ -85,7 +90,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Estado para partículas (se usa sólo en MODE_PARTICLES)
+    // Estado para partículas
     Particle* particles = (Particle*)malloc(sizeof(Particle) * (size_t)N);
     DrawItem* drawbuf   = (DrawItem*)malloc(sizeof(DrawItem) * (size_t)N);
     if (!particles || !drawbuf) {
@@ -96,15 +101,15 @@ int main(int argc, char** argv)
     }
     init_particles(particles, N, seed);
 
-    const float focal4 = 2.0f;
-    const float focal3 = 2.0f;
+    // Cámara 3D para tesseracto
+    Camera3 cam = {0.0f, 0.0f, -5.0f, 0.0f, 0.0f, 70.0f}; // pos Z negativa mirando hacia +Z
+    bool mouse_captured = false;
 
+    const float focal4 = 2.0f; // perspectiva 4D
     Uint64 perf_freq = SDL_GetPerformanceFrequency();
     Uint64 t_prev = SDL_GetPerformanceCounter();
-    double acc_time = 0.0;
-    double fps_acc = 0.0;
-    int fps_count = 0;
-    float fps_smoothed = 0.0f;
+    double acc_time = 0.0, fps_acc = 0.0;
+    int fps_count = 0; float fps_smoothed = 0.0f;
     Uint32 frame_ticks_start = SDL_GetTicks();
     int running = 1;
 
@@ -115,57 +120,89 @@ int main(int argc, char** argv)
             if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
                 if (e.key.keysym.sym == SDLK_t) mode = (mode==MODE_PARTICLES? MODE_TESSERACT: MODE_PARTICLES);
+                if (e.key.keysym.sym == SDLK_m) { // capturar/soltar ratón
+                    mouse_captured = !mouse_captured;
+                    SDL_SetRelativeMouseMode(mouse_captured ? SDL_TRUE : SDL_FALSE);
+                }
+                if (e.key.keysym.sym == SDLK_r) { // reset cámara
+                    cam.px = cam.py = 0.0f; cam.pz = -5.0f; cam.yaw = cam.pitch = 0.0f; cam.fov_deg = 70.0f;
+                }
+            }
+            if (e.type == SDL_MOUSEMOTION && mouse_captured) {
+                const float sens = 0.0025f; // sensibilidad
+                cam.yaw   += e.motion.xrel * sens;
+                cam.pitch += e.motion.yrel * sens;
+                if (cam.pitch >  1.55f) cam.pitch =  1.55f;
+                if (cam.pitch < -1.55f) cam.pitch = -1.55f;
+            }
+            if (e.type == SDL_MOUSEWHEEL) {
+                cam.fov_deg += (e.wheel.y < 0 ? +3.0f : -3.0f);
+                if (cam.fov_deg < 30.0f) cam.fov_deg = 30.0f;
+                if (cam.fov_deg > 110.0f) cam.fov_deg = 110.0f;
             }
         }
 
+        // delta tiempo
         Uint64 t_now = SDL_GetPerformanceCounter();
         double dt = (double)(t_now - t_prev) / (double)perf_freq;
-        t_prev = t_now;
-        if (dt > 0.1) dt = 0.1;
+        t_prev = t_now; if (dt > 0.1) dt = 0.1;
         float t = (float)(SDL_GetTicks() * 0.001f);
 
+        // Movimiento WASD + QE
+        const Uint8* kb = SDL_GetKeyboardState(NULL);
+        float spd = 3.0f; if (kb[SDL_SCANCODE_LSHIFT]) spd *= 3.0f;
+        float move = spd * (float)dt;
+        float cyaw = cosf(cam.yaw), syaw = sinf(cam.yaw);
+        // vectores en plano XZ
+        float fwdx =  syaw, fwdz = cyaw;
+        float rgtx =  cyaw, rgtz = -syaw;
+
+        if (kb[SDL_SCANCODE_W]) { cam.px += fwdx*move; cam.pz += fwdz*move; }
+        if (kb[SDL_SCANCODE_S]) { cam.px -= fwdx*move; cam.pz -= fwdz*move; }
+        if (kb[SDL_SCANCODE_A]) { cam.px -= rgtx*move; cam.pz -= rgtz*move; }
+        if (kb[SDL_SCANCODE_D]) { cam.px += rgtx*move; cam.pz += rgtz*move; }
+        if (kb[SDL_SCANCODE_Q]) { cam.py -= move; }
+        if (kb[SDL_SCANCODE_E]) { cam.py += move; }
+
+        // clear
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(renderer, 5, 8, 13, 255);
         SDL_RenderClear(renderer);
 
         if (mode == MODE_PARTICLES) {
+            const float focal3 = 2.0f; // se usa sólo en partículas
             update_particles((float)dt, particles, drawbuf, N, W, H, t, focal4, focal3);
             for (int i=0; i<N; ++i) {
                 SDL_SetRenderDrawColor(renderer, drawbuf[i].r8, drawbuf[i].g8, drawbuf[i].b8, drawbuf[i].a8);
-                SDL_FRect rect;
-                rect.x = drawbuf[i].x - drawbuf[i].r * 0.5f;
-                rect.y = drawbuf[i].y - drawbuf[i].r * 0.5f;
-                rect.w = drawbuf[i].r;
-                rect.h = drawbuf[i].r;
+                SDL_FRect rect = { drawbuf[i].x - drawbuf[i].r*0.5f,
+                                   drawbuf[i].y - drawbuf[i].r*0.5f,
+                                   drawbuf[i].r, drawbuf[i].r };
                 SDL_RenderFillRectF(renderer, &rect);
             }
         } else {
-            render_tesseract(renderer, W, H, t, focal4, focal3);
+            render_tesseract(renderer, W, H, t, focal4, &cam);
         }
-
         SDL_RenderPresent(renderer);
 
-        acc_time += dt; fps_acc += 1.0; ++fps_count;
-        if (acc_time >= 0.5) {
-            float fps = (float)(fps_acc / acc_time);
-            fps_smoothed = 0.7f * fps_smoothed + 0.3f * fps;
-            set_window_title_fps(window, fps_smoothed, mode);
-            acc_time = 0.0; fps_acc = 0.0; fps_count = 0;
+        // FPS
+        static double acc=0; static int frames=0; acc+=dt; frames++;
+        if (acc >= 0.5) {
+            float fps = (float)(frames/acc);
+            fps_smoothed = 0.7f*fps_smoothed + 0.3f*fps;
+            set_window_title_fps(window, fps_smoothed, mode, &cam);
+            acc=0; frames=0;
         }
 
         if (fpscap > 0) {
-            Uint32 frame_time = SDL_GetTicks() - frame_ticks_start;
-            Uint32 target_ms = (Uint32)((1000.0f / (float)fpscap) + 0.5f);
-            if (target_ms < 1) target_ms = 1;
-            if (frame_time < target_ms) SDL_Delay(target_ms - frame_time);
-            frame_ticks_start = SDL_GetTicks();
+            Uint32 now = SDL_GetTicks();
+            static Uint32 last = 0;
+            Uint32 target_ms = (Uint32)((1000.0f/(float)fpscap)+0.5f);
+            if (now - last < target_ms) SDL_Delay(target_ms - (now - last));
+            last = SDL_GetTicks();
         }
     }
 
-    free(particles);
-    free(drawbuf);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    free(particles); free(drawbuf);
+    SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); SDL_Quit();
     return 0;
 }
