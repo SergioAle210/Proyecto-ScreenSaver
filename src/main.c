@@ -4,6 +4,9 @@
 #include <string.h>
 #include <math.h>
 #include <SDL2/SDL.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "sim.h"
 #include "cube3d.h"
@@ -12,27 +15,44 @@ enum Mode { MODE_PARTICLES=0, MODE_CUBE3D=1 };
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Uso: %s N [opciones]\n", argv[0]);
-        printf("Opciones: --mode particles|cube3d\n");
+        printf("Uso: %s N [--mode particles|cube3d] [--seed S] [--fpscap X] [--threads T]\n", argv[0]);
         return 1;
     }
 
-    int N = atoi(argv[1]), maxfps = 60;
+    int N = atoi(argv[1]);
     enum Mode mode = MODE_PARTICLES;
+    int seed = 1234;
+    int fpscap = 0; // 0 = sin límite
+#ifdef _OPENMP
+    int threads = 0;
+#endif
 
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--mode") && i + 1 < argc) {
             ++i;
             if (!strcmp(argv[i], "particles")) mode = MODE_PARTICLES;
             else if (!strcmp(argv[i], "cube3d")) mode = MODE_CUBE3D;
+        } else if (!strcmp(argv[i], "--seed") && i + 1 < argc) {
+            seed = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--fpscap") && i + 1 < argc) {
+            fpscap = atoi(argv[++i]);
+#ifdef _OPENMP
+        } else if (!strcmp(argv[i], "--threads") && i + 1 < argc) {
+            threads = atoi(argv[++i]);
+#endif
         }
     }
+
+#ifdef _OPENMP
+    if (threads > 0) {
+        omp_set_num_threads(threads);
+    }
+#endif
 
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER);
     SDL_DisplayMode DM;
     SDL_GetCurrentDisplayMode(0, &DM);
-    int W = DM.w;
-    int H = DM.h;
+    int W = DM.w, H = DM.h;
 
     SDL_Window* win = SDL_CreateWindow("Screensaver", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, W, H, SDL_WINDOW_RESIZABLE);
     SDL_MaximizeWindow(win);
@@ -44,7 +64,7 @@ int main(int argc, char* argv[]) {
     if (mode == MODE_PARTICLES) {
         particles = malloc(sizeof(Particle) * N);
         drawbuf = malloc(sizeof(DrawItem) * N);
-        init_particles(particles, N, 1234);
+        init_particles(particles, N, seed);
     }
 
     int running = 1;
@@ -96,6 +116,14 @@ int main(int argc, char* argv[]) {
             char title[128];
             snprintf(title, sizeof(title), "Screensaver | FPS: %d", fps);
             SDL_SetWindowTitle(win, title);
+        }
+
+        if (fpscap > 0) {
+            Uint32 frame_time = SDL_GetTicks() - now;
+            Uint32 delay = 1000 / fpscap;
+            if (frame_time < delay) {
+                SDL_Delay(delay - frame_time);
+            }
         }
     }
 
