@@ -12,6 +12,7 @@ Simulador tipo *screensaver* en **C puro** con dos binarios: **secuencial** y **
 
 ```bash
 sudo apt-get install -y libsdl2-dev
+make clean
 make            # genera build/screensaver4d_seq y build/screensaver4d_omp
 ```
 
