@@ -1,4 +1,4 @@
-// main.c — añade modo CLOTH (manta de esferas 3D pulsante)
+// main.c — añade modo CLOTH (manta de esferas 3D pulsante) + zoom/escala
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,9 +25,13 @@ static void print_usage(const char* prog){
     printf("\nModo cloth (manta):\n");
     printf("  --grid GXxGY     (p. ej. 180x100; si se omite, se deriva de N o del tamaño)\n");
     printf("  --tilt DEG       (inclinacion X, grados; ej 25)\n");
-    printf("  --fov  F         (campo de vision; ej 1.0..1.3)\n");
+    printf("  --fov  F         (campo de vision; ej 1.0..2.2)\n");
+    printf("  --zcam Z         (posicion camara en Z; mas cerca ~ -3.0)\n");
+    printf("  --spanX Sx       (ancho de la manta en mundo)\n");
+    printf("  --spanY Sy       (alto de la manta en mundo)\n");
+    printf("  --radius R       (radio base por bola en pixeles; override)\n");
     printf("  --amp  A         (amplitud aguja; ej 0.28..0.4)\n");
-    printf("  --sigma S        (dispersion aguja; ej 0.25)\n");
+    printf("  --sigma S        (dispersion aguja; ej 0.18..0.30)\n");
     printf("  --speed V        (velocidad aguja; ej 1.0)\n");
     printf("  --colorSpeed C   (velocidad ciclo color; ej 0.35)\n");
 }
@@ -54,10 +58,11 @@ int main(int argc, char* argv[]) {
     CP.spanX = 2.4f; CP.spanY = 1.8f;
     CP.tiltX_deg = 22.0f; CP.tiltY_deg = -8.0f;
     CP.zCam = -6.0f; CP.fov = 1.05f;
-    CP.baseRadius = 0.0f;    // derivado del grid/ventana
+    CP.baseRadius = 0.0f;    // si el usuario no pone --radius, se deriva del grid/ventana
     CP.amp = 0.28f; CP.sigma = 0.25f; CP.omega = 2.8f;
     CP.speed = 1.0f; CP.colorSpeed = 0.35f;
 
+    // ---- Parseo de argumentos ----
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--mode") && i + 1 < argc) {
             ++i;
@@ -81,6 +86,14 @@ int main(int argc, char* argv[]) {
             CP.tiltX_deg = (float)atof(argv[++i]);
         } else if (!strcmp(argv[i], "--fov") && i + 1 < argc) {
             CP.fov = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--zcam") && i + 1 < argc) {
+            CP.zCam = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--spanX") && i + 1 < argc) {
+            CP.spanX = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--spanY") && i + 1 < argc) {
+            CP.spanY = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--radius") && i + 1 < argc) {
+            CP.baseRadius = (float)atof(argv[++i]); // px (override)
         } else if (!strcmp(argv[i], "--amp") && i + 1 < argc) {
             CP.amp = (float)atof(argv[++i]);
         } else if (!strcmp(argv[i], "--sigma") && i + 1 < argc) {
