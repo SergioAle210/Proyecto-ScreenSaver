@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef M_PI
+    #define M_PI 3.14159265
+#endif
 #ifdef _OPENMP
   #include <omp.h>
 #endif
