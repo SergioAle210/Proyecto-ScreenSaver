@@ -1,4 +1,4 @@
-// main.c — añade modo CLOTH (manta de esferas 3D pulsante) + zoom/escala
+// main.c — añade modo CLOTH (manta de esferas 3D pulsante) + zoom/escala/centrado
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,17 +23,20 @@ static void print_usage(const char* prog){
     printf("  --threads T      (OpenMP threads)\n");
 #endif
     printf("\nModo cloth (manta):\n");
-    printf("  --grid GXxGY     (p. ej. 180x100; si se omite, se deriva de N o del tamaño)\n");
-    printf("  --tilt DEG       (inclinacion X, grados; ej 25)\n");
-    printf("  --fov  F         (campo de vision; ej 1.0..2.2)\n");
-    printf("  --zcam Z         (posicion camara en Z; mas cerca ~ -3.0)\n");
-    printf("  --spanX Sx       (ancho de la manta en mundo)\n");
-    printf("  --spanY Sy       (alto de la manta en mundo)\n");
-    printf("  --radius R       (radio base por bola en pixeles; override)\n");
-    printf("  --amp  A         (amplitud aguja; ej 0.28..0.4)\n");
-    printf("  --sigma S        (dispersion aguja; ej 0.18..0.30)\n");
-    printf("  --speed V        (velocidad aguja; ej 1.0)\n");
-    printf("  --colorSpeed C   (velocidad ciclo color; ej 0.35)\n");
+    printf("  --grid GXxGY     (p. ej. 180x100; si se omite, se deriva de N/aspecto)\n");
+    printf("  --tilt DEG       (inclinacion X en grados)\n");
+    printf("  --fov  F         (campo de vision; ~1.0..2.2)\n");
+    printf("  --zcam Z         (posicion camara; mas cerca: -3.0)\n");
+    printf("  --spanX Sx       (ancho “mundo”)\n");
+    printf("  --spanY Sy       (alto  “mundo”)\n");
+    printf("  --radius R       (radio base por bola en px; override)\n");
+    printf("  --amp  A         (amplitud aguja)\n");
+    printf("  --sigma S        (dispersion aguja)\n");
+    printf("  --speed V        (velocidad aguja)\n");
+    printf("  --colorSpeed C   (velocidad ciclo color)\n");
+    printf("  --panX px        (paneo horizontal en pixeles; + derecha)\n");
+    printf("  --panY px        (paneo vertical en pixeles; + abajo)\n");
+    printf("  --center 0|1     (centrado automatico; default 1)\n");
 }
 
 static int parse_grid(const char* s, int* GX, int* GY){
@@ -54,13 +57,14 @@ int main(int argc, char* argv[]) {
 
     // Parámetros de manta (cloth)
     ClothParams CP = {0};
-    CP.GX = 0; CP.GY = 0;    // se derivan
+    CP.GX = 0; CP.GY = 0;        // se derivan
     CP.spanX = 2.4f; CP.spanY = 1.8f;
     CP.tiltX_deg = 22.0f; CP.tiltY_deg = -8.0f;
     CP.zCam = -6.0f; CP.fov = 1.05f;
-    CP.baseRadius = 0.0f;    // si el usuario no pone --radius, se deriva del grid/ventana
+    CP.baseRadius = 0.0f;        // si no hay --radius, se deriva
     CP.amp = 0.28f; CP.sigma = 0.25f; CP.omega = 2.8f;
     CP.speed = 1.0f; CP.colorSpeed = 0.35f;
+    CP.panX_px = 0.0f; CP.panY_px = 0.0f; CP.autoCenter = 1; // centrado por defecto
 
     // ---- Parseo de argumentos ----
     for (int i = 2; i < argc; ++i) {
@@ -102,6 +106,12 @@ int main(int argc, char* argv[]) {
             CP.speed = (float)atof(argv[++i]);
         } else if (!strcmp(argv[i], "--colorSpeed") && i + 1 < argc) {
             CP.colorSpeed = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--panX") && i + 1 < argc) {
+            CP.panX_px = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--panY") && i + 1 < argc) {
+            CP.panY_px = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--center") && i + 1 < argc) {
+            CP.autoCenter = atoi(argv[++i]) ? 1 : 0;
         } else {
             fprintf(stderr, "Argumento no reconocido: %s\n", argv[i]);
             print_usage(argv[0]);
@@ -212,6 +222,5 @@ int main(int argc, char* argv[]) {
     SDL_DestroyRenderer(R);
     SDL_DestroyWindow(win);
     SDL_Quit();
-
     return 0;
 }

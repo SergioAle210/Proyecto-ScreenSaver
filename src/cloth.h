@@ -3,44 +3,47 @@
 #define CLOTH_H
 
 #include <SDL2/SDL.h>
-#include "sim.h"   // Para reutilizar DrawItem (x,y,r, rgba)
+#include "sim.h"   // Define DrawItem
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct {
-    int   GX, GY;        // Grid (columnas x filas). Si 0, se calcula desde N y aspecto ventana
-    float spanX, spanY;  // Tamaño en “mundo” de la manta (en unidades normalizadas)
-    float tiltX_deg;     // Inclinación X (grados) para efecto 3D
-    float tiltY_deg;     // Inclinación Y (grados) opcional (yaw ligero)
+    int   GX, GY;        // Grid (cols x rows). Si 0, se deriva de N/aspecto
+    float spanX, spanY;  // Tamaño en “mundo” de la manta
+    float tiltX_deg;     // Inclinación X (grados)
+    float tiltY_deg;     // Inclinación Y (grados)
     float zCam;          // Cámara (z)
-    float fov;           // Campo de visión (perspectiva). ~[0.8..1.4]
-    float baseRadius;    // Radio base (px); si 0, se deriva de W/GX y H/GY
-    float amp;           // Amplitud de la ondulación “aguja”
-    float sigma;         // Dispersión de la aguja (Gaussian)
+    float fov;           // Campo de visión (perspectiva)
+    float baseRadius;    // Radio base (px). Si >0, se respeta (override)
+    float amp;           // Amplitud de la onda-aguja
+    float sigma;         // Dispersión gaussiana de la aguja
     float omega;         // Frecuencia global de palpitar (rad/s)
-    float speed;         // Velocidad de desplazamiento de la aguja en XY
+    float speed;         // Velocidad de la aguja en XY
     float colorSpeed;    // Velocidad del ciclo de color (hue)
+
+    // Centrado/paneo en pantalla
+    float panX_px;       // + derecha / - izquierda
+    float panY_px;       // + abajo   / - arriba
+    int   autoCenter;    // 1 = centrar automáticamente (default)
 } ClothParams;
 
 typedef struct {
     ClothParams P;
     int W_last, H_last;
-    int N;               // GX*GY
-    DrawItem* draw;      // buffer de dibujo (pos/color/radio)
-    float*    depth;     // buffer de profundidad para ordenar
-    SDL_Texture* sprite; // sprite circular con alfa (para “bolas” suaves)
-    int spriteRadius;    // radio del sprite base
+    int N;
+    DrawItem* draw;      // buffer de dibujo
+    float*    depth;     // buffer de profundidad
+    SDL_Texture* sprite; // sprite circular con alfa
+    int spriteRadius;
+
+    // Offset suavizado para centrar/panear
+    float tx, ty;
 } ClothState;
 
-// Inicializa el estado (crea sprite, buffers, etc.)
-int cloth_init(SDL_Renderer* R, ClothState* S, const ClothParams* P_in, int W, int H);
-
-// Actualiza la manta y la renderiza (ordena por profundidad y dibuja)
+int  cloth_init(SDL_Renderer* R, ClothState* S, const ClothParams* P_in, int W, int H);
 void cloth_update_and_render(SDL_Renderer* R, ClothState* S, int W, int H, float t);
-
-// Libera recursos
 void cloth_destroy(ClothState* S);
 
 #ifdef __cplusplus
