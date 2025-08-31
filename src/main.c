@@ -1,4 +1,4 @@
-// main.c
+// main.c — añade modo CLOTH (manta de esferas 3D pulsante)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,14 +10,35 @@
 
 #include "sim.h"
 #include "cube3d.h"
+#include "cloth.h"
 
-enum Mode { MODE_PARTICLES=0, MODE_CUBE3D=1 };
+enum Mode { MODE_PARTICLES=0, MODE_CUBE3D=1, MODE_CLOTH=2 };
+
+static void print_usage(const char* prog){
+    printf("Uso: %s N [opciones]\n", prog);
+    printf("  --mode particles|cube3d|cloth\n");
+    printf("  --seed S         (semilla para particles)\n");
+    printf("  --fpscap X       (limite de FPS; 0 = sin limite)\n");
+#ifdef _OPENMP
+    printf("  --threads T      (OpenMP threads)\n");
+#endif
+    printf("\nModo cloth (manta):\n");
+    printf("  --grid GXxGY     (p. ej. 180x100; si se omite, se deriva de N o del tamaño)\n");
+    printf("  --tilt DEG       (inclinacion X, grados; ej 25)\n");
+    printf("  --fov  F         (campo de vision; ej 1.0..1.3)\n");
+    printf("  --amp  A         (amplitud aguja; ej 0.28..0.4)\n");
+    printf("  --sigma S        (dispersion aguja; ej 0.25)\n");
+    printf("  --speed V        (velocidad aguja; ej 1.0)\n");
+    printf("  --colorSpeed C   (velocidad ciclo color; ej 0.35)\n");
+}
+
+static int parse_grid(const char* s, int* GX, int* GY){
+    int a=0,b=0; if(sscanf(s, "%dx%d", &a, &b)==2 && a>0 && b>0){ *GX=a; *GY=b; return 1; }
+    return 0;
+}
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        printf("Uso: %s N [--mode particles|cube3d] [--seed S] [--fpscap X] [--threads T]\n", argv[0]);
-        return 1;
-    }
+    if (argc < 2) { print_usage(argv[0]); return 1; }
 
     int N = atoi(argv[1]);
     enum Mode mode = MODE_PARTICLES;
@@ -27,11 +48,22 @@ int main(int argc, char* argv[]) {
     int threads = 0;
 #endif
 
+    // Parámetros de manta (cloth)
+    ClothParams CP = {0};
+    CP.GX = 0; CP.GY = 0;    // se derivan
+    CP.spanX = 2.4f; CP.spanY = 1.8f;
+    CP.tiltX_deg = 22.0f; CP.tiltY_deg = -8.0f;
+    CP.zCam = -6.0f; CP.fov = 1.05f;
+    CP.baseRadius = 0.0f;    // derivado del grid/ventana
+    CP.amp = 0.28f; CP.sigma = 0.25f; CP.omega = 2.8f;
+    CP.speed = 1.0f; CP.colorSpeed = 0.35f;
+
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--mode") && i + 1 < argc) {
             ++i;
             if (!strcmp(argv[i], "particles")) mode = MODE_PARTICLES;
             else if (!strcmp(argv[i], "cube3d")) mode = MODE_CUBE3D;
+            else if (!strcmp(argv[i], "cloth"))  mode = MODE_CLOTH;
         } else if (!strcmp(argv[i], "--seed") && i + 1 < argc) {
             seed = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--fpscap") && i + 1 < argc) {
@@ -40,31 +72,64 @@ int main(int argc, char* argv[]) {
         } else if (!strcmp(argv[i], "--threads") && i + 1 < argc) {
             threads = atoi(argv[++i]);
 #endif
+        } else if (!strcmp(argv[i], "--grid") && i + 1 < argc) {
+            if (!parse_grid(argv[++i], &CP.GX, &CP.GY)) {
+                fprintf(stderr, "Formato --grid invalido. Use GXxGY, p. ej. 180x100\n");
+                return 2;
+            }
+        } else if (!strcmp(argv[i], "--tilt") && i + 1 < argc) {
+            CP.tiltX_deg = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--fov") && i + 1 < argc) {
+            CP.fov = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--amp") && i + 1 < argc) {
+            CP.amp = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--sigma") && i + 1 < argc) {
+            CP.sigma = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--speed") && i + 1 < argc) {
+            CP.speed = (float)atof(argv[++i]);
+        } else if (!strcmp(argv[i], "--colorSpeed") && i + 1 < argc) {
+            CP.colorSpeed = (float)atof(argv[++i]);
+        } else {
+            fprintf(stderr, "Argumento no reconocido: %s\n", argv[i]);
+            print_usage(argv[0]);
+            return 2;
         }
     }
 
 #ifdef _OPENMP
-    if (threads > 0) {
-        omp_set_num_threads(threads);
-    }
+    if (threads > 0) { omp_set_num_threads(threads); }
 #endif
 
-    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER);
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+        fprintf(stderr, "SDL_Init error: %s\n", SDL_GetError());
+        return 3;
+    }
     SDL_DisplayMode DM;
     SDL_GetCurrentDisplayMode(0, &DM);
     int W = DM.w, H = DM.h;
 
     SDL_Window* win = SDL_CreateWindow("Screensaver", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, W, H, SDL_WINDOW_RESIZABLE);
     SDL_MaximizeWindow(win);
-    SDL_Renderer* R = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+    SDL_Renderer* R = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if(!R){ fprintf(stderr, "SDL_CreateRenderer error: %s\n", SDL_GetError()); return 4; }
 
     Particle* particles = NULL;
     DrawItem* drawbuf = NULL;
 
+    ClothState CS; memset(&CS,0,sizeof(CS));
+
     if (mode == MODE_PARTICLES) {
-        particles = malloc(sizeof(Particle) * N);
-        drawbuf = malloc(sizeof(DrawItem) * N);
+        if (N <= 0) N = 4096;
+        particles = (Particle*) malloc(sizeof(Particle) * N);
+        drawbuf = (DrawItem*) malloc(sizeof(DrawItem) * N);
         init_particles(particles, N, seed);
+    } else if (mode == MODE_CLOTH) {
+        // Si el usuario pasó N pero no grid, úsalo para derivar grid aproximado
+        if ((CP.GX<=0 || CP.GY<=0) && N>0){ CP.GX = N; CP.GY = 1; } // se corrige en init
+        if (cloth_init(R, &CS, &CP, W, H) != 0){
+            fprintf(stderr, "Error inicializando CLOTH\n");
+            return 5;
+        }
     }
 
     int running = 1;
@@ -104,6 +169,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (mode == MODE_CUBE3D) {
             render_cube3d(R, W, H, t);
+        } else if (mode == MODE_CLOTH) {
+            cloth_update_and_render(R, &CS, W, H, t);
         }
 
         SDL_RenderPresent(R);
@@ -113,22 +180,22 @@ int main(int argc, char* argv[]) {
             fps = frame_count;
             frame_count = 0;
             fps_timer = SDL_GetTicks();
-            char title[128];
-            snprintf(title, sizeof(title), "Screensaver | FPS: %d", fps);
+            char title[192];
+            snprintf(title, sizeof(title), "Screensaver | Mode=%s | %dx%d | FPS: %d",
+                     (mode==MODE_PARTICLES?"particles":(mode==MODE_CUBE3D?"cube3d":"cloth")), W, H, fps);
             SDL_SetWindowTitle(win, title);
         }
 
         if (fpscap > 0) {
             Uint32 frame_time = SDL_GetTicks() - now;
-            Uint32 delay = 1000 / fpscap;
-            if (frame_time < delay) {
-                SDL_Delay(delay - frame_time);
-            }
+            Uint32 delay = 1000 / (Uint32)fpscap;
+            if (frame_time < delay) { SDL_Delay(delay - frame_time); }
         }
     }
 
     if (particles) free(particles);
     if (drawbuf) free(drawbuf);
+    if (mode==MODE_CLOTH) cloth_destroy(&CS);
     SDL_DestroyRenderer(R);
     SDL_DestroyWindow(win);
     SDL_Quit();
