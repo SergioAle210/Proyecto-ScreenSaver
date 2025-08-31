@@ -11,6 +11,6 @@
  * @param height Alto de ventana.
  * @param time Tiempo actual en segundos (para animación).
  */
-void render_cube3d(SDL_Renderer* renderer, int width, int height, float time);
+void render_cube3d(SDL_Renderer *renderer, int width, int height, float time);
 
 #endif

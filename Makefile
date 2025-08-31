@@ -2,7 +2,7 @@
 
 # Compilador y flags base
 CC       = gcc
-CFLAGS   = -Wall -O2 -std=c11
+CFLAGS   = -Wall -O3 -march=native -ffast-math -fno-math-errno -std=c11
 LDFLAGS  =
 # Autodetección de SDL2 (pkg-config o sdl2-config). Si falla, usa -lSDL2.
 SDL_CFLAGS ?= $(shell pkg-config --cflags sdl2 2>/dev/null || sdl2-config --cflags 2>/dev/null)
