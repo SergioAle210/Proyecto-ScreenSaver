@@ -1,16 +1,19 @@
-# Makefile — SOLO CLOTH
+# Makefile — Compila las variantes secuencial y paralela del modo cloth.
+# Usa pkg-config o sdl2-config para detectar SDL2. El binario paralelo añade -fopenmp.
 
 CC       = gcc
-CFLAGS   = -Wall -O3 -march=native -ffast-math -fno-math-errno -std=c11
+CFLAGS   = -Wall -Wextra -Wshadow -Wconversion -O3 -march=native -ffast-math -fno-math-errno -std=c11
 LDFLAGS  =
 SDL_CFLAGS ?= $(shell pkg-config --cflags sdl2 2>/dev/null || sdl2-config --cflags 2>/dev/null)
 SDL_LIBS   ?= $(shell pkg-config --libs sdl2 2>/dev/null    || sdl2-config --libs 2>/dev/null || printf -- "-lSDL2")
 CPPFLAGS  = $(SDL_CFLAGS)
 LIBS      = $(SDL_LIBS) -lm
 
-# ---- FUENTES SOLO CLOTH ----
+# Fuentes compartidas para ambos binarios
 COMMON_SRC = src/main.c \
              src/cloth_core.c src/cloth_draw_seq.c
+
+# El binario paralelo agrega el backend OMP
 PAR_SRC    = $(COMMON_SRC) src/cloth_draw_omp.c
 
 OBJ_SEQ = $(COMMON_SRC:.c=.o)
@@ -29,9 +32,11 @@ $(TARGET_SEQ): $(OBJ_SEQ)
 $(TARGET_PAR): $(OBJ_PAR)
 	$(CC) $(CFLAGS) -fopenmp $(LDFLAGS) -o $@ $^ $(LIBS)
 
+# Regla para objetos con OpenMP
 src/%.op: src/%.c
 	$(CC) $(CFLAGS) -fopenmp $(CPPFLAGS) -c -o $@ $<
 
+# Regla para objetos secuenciales
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 

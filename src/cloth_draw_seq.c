@@ -1,5 +1,5 @@
-// cloth_draw_seq.c — backend secuencial (RenderCopyF por esfera)
 #include "cloth.h"
+#include <SDL2/SDL.h>
 
 void cloth_render_seq(SDL_Renderer *R, const ClothState *S)
 {
