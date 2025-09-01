@@ -1,4 +1,4 @@
-// main.c — modos: particles | cube3d | cloth — SDL2 + (opcional) OpenMP
+// main.c — modo: cloth — SDL2 + (opcional) OpenMP
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,25 +12,21 @@
 #include "sim.h"
 #include "cloth.h"
 
-bool noGeom = false;
-
 enum Mode
 {
-    MODE_PARTICLES = 0,
-    MODE_CLOTH = 1
+    MODE_CLOTH = 0
 };
 
 static void print_usage(const char *prog)
 {
     printf("Uso: %s N [opciones]\n", prog);
-    printf("  --mode particles|cube3d|cloth\n");
-    printf("  --seed S         (semilla para particles)\n");
+    printf("  --mode cloth\n");
     printf("  --fpscap X       (limite de FPS; 0 = sin limite)\n");
 #ifdef _OPENMP
     printf("  --threads T      (OpenMP threads)\n");
+    printf("  --nogeom         (diagnostico: fuerza backend secuencial)\n");
 #endif
     printf("  --novsync        (desactiva vsync del renderer)\n");
-    printf("  --simpleRender   (dibujo simplificado: puntos en vez de rects)\n");
     printf("\nModo cloth (manta):\n");
     printf("  --grid GXxGY     (p. ej. 180x100; si se omite, se deriva de N/aspecto)\n");
     printf("  --tilt DEG       (inclinacion X en grados)\n");
@@ -69,20 +65,18 @@ int main(int argc, char *argv[])
     }
 
     int N = atoi(argv[1]);
-    enum Mode mode = MODE_PARTICLES;
-    int seed = 1234;
+    enum Mode mode = MODE_CLOTH;
     int fpscap = 0; // 0 = sin limite
     bool vsync_on = true;
-    bool simpleRender = false;
-
 #ifdef _OPENMP
-    int threads = 0; // 0 -> decide runtime
+    bool noGeom = false; // fuerza backend secuencial desde binario paralelo
+    int threads = 0;     // 0 -> decide runtime
 #endif
 
     // ---- Parametros CLOTH ----
     ClothParams CP = {0};
-    CP.GX = 0;
-    CP.GY = 0; // se derivan si no vienen
+    CP.GX = 0; // si 0, se deriva de N/aspecto
+    CP.GY = 0;
     CP.spanX = 2.4f;
     CP.spanY = 1.8f;
     CP.tiltX_deg = 22.0f;
@@ -105,18 +99,8 @@ int main(int argc, char *argv[])
         if (!strcmp(argv[i], "--mode") && i + 1 < argc)
         {
             const char *m = argv[++i];
-            if (!strcmp(m, "particles"))
-                mode = MODE_PARTICLES;
-            else if (!strcmp(m, "cloth"))
+            if (!strcmp(m, "cloth"))
                 mode = MODE_CLOTH;
-        }
-        else if (!strcmp(argv[i], "--seed") && i + 1 < argc)
-        {
-            seed = atoi(argv[++i]);
-        }
-        else if (!strcmp(argv[i], "--nogeom"))
-        {
-            noGeom = true;
         }
         else if (!strcmp(argv[i], "--fpscap") && i + 1 < argc)
         {
@@ -126,15 +110,15 @@ int main(int argc, char *argv[])
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc)
         {
             threads = atoi(argv[++i]);
+        }
+        else if (!strcmp(argv[i], "--nogeom"))
+        {
+            noGeom = true;
 #endif
         }
         else if (!strcmp(argv[i], "--novsync"))
         {
             vsync_on = false;
-        }
-        else if (!strcmp(argv[i], "--simpleRender"))
-        {
-            simpleRender = true;
         }
         else if (!strcmp(argv[i], "--grid") && i + 1 < argc)
         {
@@ -250,29 +234,10 @@ int main(int argc, char *argv[])
         return 4;
     }
 
-    // Buffers por modo
-    Particle *particles = NULL;
-    DrawItem *drawbuf = NULL;
-    SDL_FPoint *pointbuf = NULL; // para --simpleRender (particles)
-
+    // --- Init modo cloth ---
     ClothState CS;
     memset(&CS, 0, sizeof(CS));
-
-    if (mode == MODE_PARTICLES)
-    {
-        if (N <= 0)
-            N = 4096;
-        particles = (Particle *)malloc(sizeof(Particle) * (size_t)N);
-        drawbuf = (DrawItem *)malloc(sizeof(DrawItem) * (size_t)N);
-        pointbuf = (SDL_FPoint *)malloc(sizeof(SDL_FPoint) * (size_t)N);
-        if (!particles || !drawbuf || !pointbuf)
-        {
-            fprintf(stderr, "Memoria insuficiente para N=%d\n", N);
-            return 5;
-        }
-        init_particles(particles, N, seed);
-    }
-    else if (mode == MODE_CLOTH)
+    if (mode == MODE_CLOTH)
     {
         // si usuario paso N sin grid, deriva una malla 1xN (init la corrige)
         if ((CP.GX <= 0 || CP.GY <= 0) && N > 0)
@@ -283,6 +248,9 @@ int main(int argc, char *argv[])
         if (cloth_init(R, &CS, &CP, W, H) != 0)
         {
             fprintf(stderr, "Error inicializando CLOTH\n");
+            SDL_DestroyRenderer(R);
+            SDL_DestroyWindow(win);
+            SDL_Quit();
             return 5;
         }
     }
@@ -302,7 +270,7 @@ int main(int argc, char *argv[])
     int omp_threads = 1;
 #endif
 
-    // Bucle principal
+    // ---------------- Bucle principal ----------------
     while (running)
     {
         SDL_Event e;
@@ -325,45 +293,14 @@ int main(int argc, char *argv[])
         SDL_SetRenderDrawColor(R, 0, 0, 0, 255);
         SDL_RenderClear(R);
 
-        if (mode == MODE_PARTICLES)
-        {
-            // Fase de update (paralela dentro de update_particles si fue compilado con OpenMP)
-            update_particles(dt, particles, drawbuf, N, W, H, t, 6.0f, 4.0f);
-
-            // Render: simple (puntos) o normal (rectangulos)
-            if (simpleRender)
-            {
-                for (int i = 0; i < N; ++i)
-                {
-                    SDL_SetRenderDrawColor(R, drawbuf[i].r8, drawbuf[i].g8, drawbuf[i].b8, drawbuf[i].a8);
-                    pointbuf[i].x = drawbuf[i].x;
-                    pointbuf[i].y = drawbuf[i].y;
-                    // NOTA: SDL no batchéa colores distintos en un solo DrawPoints, así que:
-                    SDL_RenderDrawPointF(R, pointbuf[i].x, pointbuf[i].y);
-                }
-            }
-            else
-            {
-                for (int i = 0; i < N; ++i)
-                {
-                    SDL_SetRenderDrawColor(R, drawbuf[i].r8, drawbuf[i].g8, drawbuf[i].b8, drawbuf[i].a8);
-                    SDL_FRect rect = {
-                        drawbuf[i].x - drawbuf[i].r * 0.5f,
-                        drawbuf[i].y - drawbuf[i].r * 0.5f,
-                        drawbuf[i].r,
-                        drawbuf[i].r};
-                    SDL_RenderFillRectF(R, &rect);
-                }
-            }
-        }
-        else if (mode == MODE_CLOTH)
+        if (mode == MODE_CLOTH)
         {
             cloth_update(R, &CS, W, H, t);
 #ifdef _OPENMP
-            if (!noGeom)
-                cloth_render_omp(R, &CS); // batch geometry
+            if (omp_on && !noGeom)
+                cloth_render_omp(R, &CS); // batch geometry + draw call único
             else
-                cloth_render_seq(R, &CS); // forzar fallback
+                cloth_render_seq(R, &CS); // fallback secuencial
 #else
             cloth_render_seq(R, &CS);
 #endif
@@ -381,9 +318,9 @@ int main(int argc, char *argv[])
             SDL_RendererInfo info;
             SDL_GetRendererInfo(R, &info);
             snprintf(title, sizeof(title),
-                     "Screensaver | Mode=%s | %dx%d | FPS:%d | Rndr:%s | OMP:%s T=%d",
-                     (mode == MODE_PARTICLES ? "particles" : "cloth"),
-                     W, H, fps, info.name, (omp_on ? "ON" : "OFF"), omp_threads);
+                     "Screensaver | Mode=cloth | %dx%d | FPS:%d | OMP:%s T=%d | Rndr:%s",
+                     W, H, fps, (omp_on ? "ON" : "OFF"), omp_threads,
+                     info.name ? info.name : "unknown");
             SDL_SetWindowTitle(win, title);
         }
 
@@ -392,18 +329,10 @@ int main(int argc, char *argv[])
             Uint32 frame_time = SDL_GetTicks() - now;
             Uint32 delay = 1000u / (Uint32)fpscap;
             if (frame_time < delay)
-            {
                 SDL_Delay(delay - frame_time);
-            }
         }
     }
 
-    if (particles)
-        free(particles);
-    if (drawbuf)
-        free(drawbuf);
-    if (pointbuf)
-        free(pointbuf);
     if (mode == MODE_CLOTH)
         cloth_destroy(&CS);
     SDL_DestroyRenderer(R);
