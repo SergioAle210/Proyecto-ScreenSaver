@@ -1,72 +1,132 @@
-# Screensaver 4D — C (C11) + SDL2 + OpenMP
+# Screensaver (SDL2 + OpenMP)
 
-Simulador tipo *screensaver* en **C puro** con dos binarios: **secuencial** y **paralelo (OpenMP)**.
+Screensaver en C que renderiza tres modos: particles, cube3d y cloth. El modo cloth tiene dos backends de dibujo: secuencial y paralelo (OpenMP + SDL_RenderGeometry), compartiendo la misma lógica de simulación.
 
-- Partículas en **4D** con rotaciones en planos *(x↔w, y↔z)*, rebotes y proyección 4D→3D→2D.
-- **FPS** en el título de la ventana.
-- Parámetros por CLI: `N`, tamaño de ventana, semilla, limitador de FPS y hilos.
+## Requisitos
 
-## Compilación
+- Parametrizable por N (cantidad de elementos).
+  
+- Colores pseudoaleatorios.
+  
+- Tamaño mínimo 640×480.
+  
+- Movimiento y uso de física/trigonometría.
+  
+- Mostrar FPS en ejecución.
+  
 
-### Linux
+## Dependencias
 
-```bash
-sudo apt-get install -y libsdl2-dev
-make clean
-make            # genera build/screensaver4d_seq y build/screensaver4d_omp
-```
+- SDL2 (headers y libs).
+  
+- OpenMP (para binario paralelo).
+  
+- Compilador C11.
+  
 
-VERSIÓN SECUENCIAL (`screensaver_seq`)
-
-```
-🌈 Modo partículas sin límite de FPS (semilla por defecto):
-./screensaver_seq 1000 --mode particles
-
-🎨 Modo partículas con semilla personalizada y 30 FPS:
-./screensaver_seq 800 --mode particles --seed 123 --fpscap 30
-
-🧊 Modo cubo 3D sin límite de FPS:
-./screensaver_seq 1 --mode cube3d
-```
-
-VERSIÓN PARALELA
-
-```
-🌈 Modo partículas usando 4 hilos y 60 FPS:
-./screensaver_par 2000 --mode particles --threads 4 --fpscap 60
-
-🎨 Modo partículas sin límite de FPS, semilla fija:
-./screensaver_par 1500 --mode particles --seed 42 --threads 2
-
-🧊 Modo cubo 3D (no requiere threads, pero lo puedes dejar):
-./screensaver_par 1 --mode cube3d --threads 8
-```
-
-### Windows (MSYS2 MinGW64) (CAMBIAR)
+### Compilación
 
 ```bash
-# Instala toolchain + SDL2:
-# pacman -S --needed base-devel mingw-w64-x86_64-toolchain mingw-w64-x86_64-SDL2
-mingw32-make
-./build/screensaver4d_seq.exe 2000 1280 720 --seed 42 --fpscap 0
-./build/screensaver4d_omp.exe 2000 1280 720 --seed 42 --fpscap 0 --threads 12
+make clean && make
 ```
 
-> Si `--threads` no se especifica, usa `OMP_NUM_THREADS` o el valor por defecto del runtime.
+Genera:
 
-## Uso
+- **screensaver_seq** → versión secuencial.
+  
+- **screensaver_par** → versión paralela (-fopenmp).
+  
 
+### Ejecución (ejemplos)
+
+**Paralelo (recomendado, más FPS):**
+
+```bash
+./screensaver_par 0 --mode cloth --grid 220x136 --fov 1.6 --zcam -1.0 --amp 0.35 --sigma 0.22 --colorSpeed 0.6 --tilt 16 --threads 8 --fpscap 0 --novsync
 ```
-./screensaver_[seq|par] N [--mode particles|cube3d] [--seed S] [--fpscap X] [--threads T]
+
+**Secuencial:**
+
+```bash
+./screensaver_seq 0 --mode cloth --grid 160x100 --fov 1.6 --zcam -1.0 --amp 0.35 --sigma 0.22 --colorSpeed 0.6 --tilt 16 --fpscap 0 --novsync
 ```
 
-## Estructura
+**Diagnóstico (forzar fallback secuencial desde el binario paralelo):**
 
-- `src/main.c` — bucle principal, eventos, FPS, render.
-- `src/sim.c/.h` — partículas, física 4D, proyección y buffer de dibujo.
-- `Makefile` — targets `seq` y `omp` (con y sin `-fopenmp`).
+```bash
+./screensaver_par 0 --mode cloth --grid 200x120 --nogeom --fpscap 0 --novsync
+```
 
-## Sugerencias de evaluación
+### Argumentos principales
 
-- Mide FPS medios con el mismo `N` y resolución en ambos binarios.
-- Registra 10+ mediciones para *speedup* y eficiencia.
+- **N**: número base de elementos (usado por particles; en cloth se deriva la grilla si no indicas --grid).
+  
+- --mode particles|cube3d|cloth
+  
+- --grid GXxGY (cloth)
+  
+- --tilt, --fov, --zcam, --spanX, --spanY, --radius, --amp, --sigma, --speed, --colorSpeed, --panX, --panY, --center
+  
+- --threads T (solo paralelo)
+  
+- --fpscap X (0 = sin límite)
+  
+- --novsync
+  
+- --nogeom (opcional; fuerza backend secuencial desde el binario paralelo)
+  
+
+**Estructura del proyecto**
+
+.
+
+├── Makefile
+
+├── README.md
+
+├── screensaver_par           # binario paralelo (OpenMP)
+
+├── screensaver_seq           # binario secuencial
+
+└── src
+
+    ├── main.c                # CLI, bucle principal, selección de modo/backend
+
+    ├── sim.c / sim.h         # utilidades comunes (partículas, tipos DrawItem)
+
+    ├── cloth.h               # API pública de la manta (parámetros y estado)
+
+    ├── cloth_core.c          # lógica común: update, proyección, bucketing
+
+    ├── cloth_draw_seq.c      # backend secuencial (RenderCopyF por esfera)
+
+    ├── cloth_draw_omp.c      # backend paralelo (RenderGeometry + batch)
+
+### Diseño
+
+- **PCAM (Partición–Comunicación–Agregación–Mapeo):**
+  
+  - **Partición**: grilla GX×GY (datos independientes).
+    
+  - **Comunicación**: no hay dependencia entre celdas en el update (solo reducciones).
+    
+  - **Agregación**: reducciones para zmin/zmax y bounding box; bucketing O(N).
+    
+  - **Mapeo**: OpenMP for/collapse + reducciones → core con buen balance.
+    
+- **Paralelo vs Secuencial:**
+  
+  - **Paralelo**: update + ordenado por profundidad + batch draw (un solo draw call).
+    
+  - **Secuencial**: mismo ordenado, pero muchas llamadas a RenderCopyF.
+    
+
+**Notas de rendimiento**
+
+- Histogramas por bin sin atomics (acumulación local por hilo + reducción).
+  
+- Bounding box con reducciones min/max (sin critical).
+  
+- Textura del sprite STATIC + SDL_UpdateTexture (evita pantallas negras con RenderGeometry).
+  
+- Bandera --nogeom para diagnóstico rápido.
