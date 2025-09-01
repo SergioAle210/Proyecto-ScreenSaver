@@ -10,14 +10,14 @@
 #endif
 
 #include "sim.h"
-#include "cube3d.h"
 #include "cloth.h"
+
+bool noGeom = false;
 
 enum Mode
 {
     MODE_PARTICLES = 0,
-    MODE_CUBE3D = 1,
-    MODE_CLOTH = 2
+    MODE_CLOTH = 1
 };
 
 static void print_usage(const char *prog)
@@ -107,14 +107,16 @@ int main(int argc, char *argv[])
             const char *m = argv[++i];
             if (!strcmp(m, "particles"))
                 mode = MODE_PARTICLES;
-            else if (!strcmp(m, "cube3d"))
-                mode = MODE_CUBE3D;
             else if (!strcmp(m, "cloth"))
                 mode = MODE_CLOTH;
         }
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc)
         {
             seed = atoi(argv[++i]);
+        }
+        else if (!strcmp(argv[i], "--nogeom"))
+        {
+            noGeom = true;
         }
         else if (!strcmp(argv[i], "--fpscap") && i + 1 < argc)
         {
@@ -354,14 +356,17 @@ int main(int argc, char *argv[])
                 }
             }
         }
-        else if (mode == MODE_CUBE3D)
-        {
-            render_cube3d(R, W, H, t);
-        }
         else if (mode == MODE_CLOTH)
         {
-            // cloth_update_and_render mantiene el render en single-thread
-            cloth_update_and_render(R, &CS, W, H, t);
+            cloth_update(R, &CS, W, H, t);
+#ifdef _OPENMP
+            if (!noGeom)
+                cloth_render_omp(R, &CS); // batch geometry
+            else
+                cloth_render_seq(R, &CS); // forzar fallback
+#else
+            cloth_render_seq(R, &CS);
+#endif
         }
 
         SDL_RenderPresent(R);
@@ -373,10 +378,12 @@ int main(int argc, char *argv[])
             frame_count = 0;
             fps_timer = SDL_GetTicks();
             char title[256];
+            SDL_RendererInfo info;
+            SDL_GetRendererInfo(R, &info);
             snprintf(title, sizeof(title),
-                     "Screensaver | Mode=%s | %dx%d | FPS:%d | OMP:%s T=%d",
-                     (mode == MODE_PARTICLES ? "particles" : (mode == MODE_CUBE3D ? "cube3d" : "cloth")),
-                     W, H, fps, (omp_on ? "ON" : "OFF"), omp_threads);
+                     "Screensaver | Mode=%s | %dx%d | FPS:%d | Rndr:%s | OMP:%s T=%d",
+                     (mode == MODE_PARTICLES ? "particles" : "cloth"),
+                     W, H, fps, info.name, (omp_on ? "ON" : "OFF"), omp_threads);
             SDL_SetWindowTitle(win, title);
         }
 

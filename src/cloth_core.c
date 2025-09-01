@@ -1,9 +1,4 @@
-// cloth.c — Manta de esferas 3D (OpenMP) con:
-//  - Precompute de XY
-//  - Bucket sort O(N) por profundidad
-//  - En paralelo: batch draw con SDL_RenderGeometry (un solo draw call)
-//  - En secuencial: fallback a RenderCopyF por esfera (muchas llamadas)
-
+// cloth_core.c — actualización, proyección y ordenación por profundidad (común)
 #include "cloth.h"
 #include <math.h>
 #include <stdlib.h>
@@ -17,11 +12,13 @@
 #include <omp.h>
 #endif
 
+// Portabilidad de LIKELY/UNLIKELY (MSVC no tiene __builtin_expect)
 #ifndef LIKELY
-#define LIKELY(x) __builtin_expect(!!(x), 1)
-#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define LIKELY(x) (!!(x))
+#define UNLIKELY(x) (!!(x))
 #endif
 
+// ===== util =====
 static inline float clampf_fast(float v, float a, float b) { return fminf(fmaxf(v, a), b); }
 
 static inline void hsv_to_rgb(float h, float s, float v,
@@ -114,49 +111,7 @@ static inline Vec2 project_point(Vec3 v, int W, int H, float fov, float zCam)
     return out;
 }
 
-// ====== Sprite circular (ARGB8888) con alpha ======
-static SDL_Texture *make_circle_sprite(SDL_Renderer *R, int radius)
-{
-    int d = radius * 2;
-    SDL_Texture *tex = SDL_CreateTexture(R, SDL_PIXELFORMAT_ARGB8888,
-                                         SDL_TEXTUREACCESS_STREAMING, d, d);
-    if (!tex)
-        return NULL;
-    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-    void *pixels = NULL;
-    int pitch = 0;
-    if (SDL_LockTexture(tex, NULL, &pixels, &pitch) != 0)
-    {
-        SDL_DestroyTexture(tex);
-        return NULL;
-    }
-    for (int y = 0; y < d; y++)
-    {
-        Uint32 *row = (Uint32 *)((unsigned char *)pixels + y * pitch);
-        for (int x = 0; x < d; x++)
-        {
-            float dx = (x + 0.5f - radius), dy = (y + 0.5f - radius);
-            float r = sqrtf(dx * dx + dy * dy) / (float)radius; // 0..1
-            float alpha = clampf_fast(1.0f - r * r, 0.0f, 1.0f);
-            float sx = (dx + dy * 0.3f) / (float)radius;
-            float spec = clampf_fast(0.9f - (sx * sx + dy * dy / (radius * radius)) * 1.2f, 0.0f, 1.0f) * 0.3f;
-            unsigned char A = (unsigned char)(alpha * 255.f);
-            unsigned char c = (unsigned char)(spec * 255.f);
-            row[x] = (A << 24) | (c << 16) | (c << 8) | c; // ARGB
-        }
-    }
-    SDL_UnlockTexture(tex);
-    return tex;
-}
-
-// ====== Ordenación por profundidad (bucket sort O(N)) ======
-typedef struct
-{
-    float depth;
-    int idx;
-} DepthIdx;
-
-// Precompute XY y buffers de bucketing (globales al módulo para reuso)
+// ===== buffers de precompute XY y bucketing (privados del módulo) =====
 static float *g_X = NULL, *g_Y = NULL;
 static int g_xy_cap = 0;
 static int g_last_GX = 0, g_last_GY = 0;
@@ -165,20 +120,10 @@ static float g_last_spanX = 0.f, g_last_spanY = 0.f;
 #define ZBINS 128
 static int *g_bin_idx = NULL;
 static int g_bin_cap = 0;
-static int *g_counts = NULL;
-static int *g_starts = NULL;
-static int *g_write = NULL;
-static int *g_order_idx = NULL;
-static int g_order_cap = 0;
+static int *g_counts = NULL; // ZBINS
+static int *g_starts = NULL; // ZBINS
 
-// ==== Buffers para geometría batcheada (solo usados en paralelo) ====
-#ifdef _OPENMP
-static SDL_Vertex *g_verts = NULL;
-static int g_verts_cap = 0;
-static int *g_index = NULL;
-static int g_index_cap = 0;
-#endif
-
+// ===== helpers de capacidad =====
 static int ensure_capacity_xy(int N)
 {
     if (N <= g_xy_cap)
@@ -195,7 +140,7 @@ static int ensure_capacity_xy(int N)
     g_xy_cap = newcap;
     return 1;
 }
-static int ensure_capacity_bins(int N)
+static int ensure_capacity_bins(int N, ClothState *S)
 {
     if (N > g_bin_cap)
     {
@@ -203,53 +148,70 @@ static int ensure_capacity_bins(int N)
         while (newcap < N)
             newcap = (int)(newcap * 1.5f);
         int *nb = (int *)realloc(g_bin_idx, (size_t)newcap * sizeof(int));
-        int *no = (int *)realloc(g_order_idx, (size_t)newcap * sizeof(int));
-        if (!nb || !no)
+        if (!nb)
             return 0;
         g_bin_idx = nb;
-        g_order_idx = no;
-        g_bin_cap = g_order_cap = newcap;
+        g_bin_cap = newcap;
+    }
+    if (N > S->order_cap)
+    {
+        int newcap = (S->order_cap == 0) ? 4096 : S->order_cap;
+        while (newcap < N)
+            newcap = (int)(newcap * 1.5f);
+        int *no = (int *)realloc(S->order_idx, (size_t)newcap * sizeof(int));
+        if (!no)
+            return 0;
+        S->order_idx = no;
+        S->order_cap = newcap;
     }
     if (!g_counts)
         g_counts = (int *)calloc(ZBINS, sizeof(int));
     if (!g_starts)
         g_starts = (int *)calloc(ZBINS, sizeof(int));
-    if (!g_write)
-        g_write = (int *)calloc(ZBINS, sizeof(int));
-    return (g_counts && g_starts && g_write);
+    return (g_counts && g_starts);
 }
-#ifdef _OPENMP
-static int ensure_capacity_geo(int N)
-{
-    // 4 vértices y 6 índices por esfera
-    int needV = 4 * N, needI = 6 * N;
-    if (needV > g_verts_cap)
-    {
-        int newV = (g_verts_cap == 0) ? (4 * 4096) : g_verts_cap;
-        while (newV < needV)
-            newV = (int)(newV * 1.5f);
-        SDL_Vertex *nv = (SDL_Vertex *)realloc(g_verts, (size_t)newV * sizeof(SDL_Vertex));
-        if (!nv)
-            return 0;
-        g_verts = nv;
-        g_verts_cap = newV;
-    }
-    if (needI > g_index_cap)
-    {
-        int newI = (g_index_cap == 0) ? (6 * 4096) : g_index_cap;
-        while (newI < needI)
-            newI = (int)(newI * 1.5f);
-        int *ni = (int *)realloc(g_index, (size_t)newI * sizeof(int));
-        if (!ni)
-            return 0;
-        g_index = ni;
-        g_index_cap = newI;
-    }
-    return 1;
-}
-#endif
 
-// ====== Init / destroy ======
+// ===== sprite circular =====
+static SDL_Texture *make_circle_sprite(SDL_Renderer *R, int radius)
+{
+    int d = radius * 2;
+    SDL_Texture *tex = SDL_CreateTexture(R, SDL_PIXELFORMAT_ARGB8888,
+                                         SDL_TEXTUREACCESS_STATIC, d, d);
+    if (!tex)
+        return NULL;
+
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+
+    // buffer temporal en CPU
+    const int pitch = d * (int)sizeof(Uint32);
+    Uint32 *buf = (Uint32 *)malloc((size_t)pitch * d);
+    if (!buf)
+    {
+        SDL_DestroyTexture(tex);
+        return NULL;
+    }
+
+    for (int y = 0; y < d; ++y)
+    {
+        Uint32 *row = buf + y * d;
+        for (int x = 0; x < d; ++x)
+        {
+            float dx = (x + 0.5f - radius), dy = (y + 0.5f - radius);
+            float r = sqrtf(dx * dx + dy * dy) / (float)radius;  // 0..1
+            float alpha = clampf_fast(1.0f - r * r, 0.0f, 1.0f); // borde suave
+            float sx = (dx + dy * 0.3f) / (float)radius;
+            float spec = clampf_fast(0.9f - (sx * sx + dy * dy / (radius * radius)) * 1.2f, 0.0f, 1.0f) * 0.3f;
+            Uint8 A = (Uint8)(alpha * 255.f);
+            Uint8 c = (Uint8)(spec * 255.f);
+            row[x] = (A << 24) | (c << 16) | (c << 8) | c; // ARGB
+        }
+    }
+
+    SDL_UpdateTexture(tex, NULL, buf, pitch);
+    free(buf);
+    return tex;
+}
+
 static void derive_grid_from_N(int N, int W, int H, int *GX, int *GY)
 {
     if (N <= 0)
@@ -269,6 +231,7 @@ static void derive_grid_from_N(int N, int W, int H, int *GX, int *GY)
     *GY = gY;
 }
 
+// ================= API =================
 int cloth_init(SDL_Renderer *R, ClothState *S, const ClothParams *P_in, int W, int H)
 {
     memset(S, 0, sizeof(*S));
@@ -314,13 +277,13 @@ int cloth_init(SDL_Renderer *R, ClothState *S, const ClothParams *P_in, int W, i
     S->tx = 0.0f;
     S->ty = 0.0f;
 
-    // Precompute XY inicial
     if (!ensure_capacity_xy(S->N))
         return -3;
     g_last_GX = S->P.GX;
     g_last_GY = S->P.GY;
     g_last_spanX = S->P.spanX;
     g_last_spanY = S->P.spanY;
+
     float spanX = (S->P.spanX > 0.f ? S->P.spanX : 2.0f);
     float spanY = (S->P.spanY > 0.f ? S->P.spanY : 2.0f);
     for (int j = 0; j < S->P.GY; ++j)
@@ -335,29 +298,14 @@ int cloth_init(SDL_Renderer *R, ClothState *S, const ClothParams *P_in, int W, i
         }
     }
 
-    if (!ensure_capacity_bins(S->N))
+    if (!ensure_capacity_bins(S->N, S))
         return -4;
-#ifdef _OPENMP
-    if (!ensure_capacity_geo(S->N))
-        return -5;
-#endif
     return 0;
 }
 
-void cloth_destroy(ClothState *S)
+void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
 {
-    if (S->sprite)
-        SDL_DestroyTexture(S->sprite);
-    free(S->draw);
-    free(S->depth);
-    memset(S, 0, sizeof(*S));
-    // buffers globales quedan para reuso (se liberan al final del proceso)
-}
-
-// ====== Update + Render ======
-void cloth_update_and_render(SDL_Renderer *R, ClothState *S, int W, int H, float t)
-{
-    // Ajustes al cambiar tamaño
+    // Resize/sprite
     if (W != S->W_last || H != S->H_last)
     {
         float newBase = S->P.baseRadius;
@@ -397,7 +345,6 @@ void cloth_update_and_render(SDL_Renderer *R, ClothState *S, int W, int H, float
         g_last_spanX = spanX;
         g_last_spanY = spanY;
         for (int j = 0; j < GY; ++j)
-        {
             for (int i = 0; i < GX; ++i)
             {
                 int idx = j * GX + i;
@@ -406,14 +353,9 @@ void cloth_update_and_render(SDL_Renderer *R, ClothState *S, int W, int H, float
                 g_X[idx] = u * (spanX * 0.5f);
                 g_Y[idx] = v * (spanY * 0.5f);
             }
-        }
     }
-    if (!ensure_capacity_bins(N))
+    if (!ensure_capacity_bins(N, S))
         return;
-#ifdef _OPENMP
-    if (!ensure_capacity_geo(N))
-        return;
-#endif
 
     const float DEG2RAD = (float)M_PI / 180.0f;
     const float tiltX = S->P.tiltX_deg * DEG2RAD;
@@ -435,19 +377,18 @@ void cloth_update_and_render(SDL_Renderer *R, ClothState *S, int W, int H, float
     const float kx = 2.2f, ky = 1.7f;
     const float inv2sig2 = 1.0f / (2.0f * sig * sig);
 
-    // ====== Paso 1: UPDATE en paralelo + profundidad (reduction) ======
+    // ===== Paso 1: UPDATE + depth (reducciones) =====
     float zmin = 1e30f, zmax = -1e30f;
+
 #ifdef _OPENMP
-#pragma omp parallel for collapse(2) schedule(static) reduction(min : zmin) reduction(max : zmax)
+#pragma omp parallel for schedule(static) reduction(min : zmin) reduction(max : zmax)
 #endif
     for (int j = 0; j < GY; ++j)
     {
         for (int i = 0; i < GX; ++i)
         {
             int idx = j * GX + i;
-
-            float X = g_X[idx];
-            float Y = g_Y[idx];
+            float X = g_X[idx], Y = g_Y[idx];
 
             float base = 0.22f * sinf(kx * X + 0.7f * t) * cosf(ky * Y + 0.9f * t);
             float dx = X - cx, dy = Y - cy;
@@ -489,43 +430,14 @@ void cloth_update_and_render(SDL_Renderer *R, ClothState *S, int W, int H, float
         }
     }
 
-    // ====== Paso 1.5: centrado/paneo (reducción) ======
-    float tx_target = 0.0f, ty_target = 0.0f;
+    // ===== Paso 1.5: centrado/paneo (reducción min/max) =====
     if (S->P.autoCenter)
     {
-        float minx = 1e30f, maxx = -1e30f;
-        float miny = 1e30f, maxy = -1e30f;
+        float minx = 1e30f, maxx = -1e30f, miny = 1e30f, maxy = -1e30f;
+
 #ifdef _OPENMP
-#pragma omp parallel
-        {
-            float lminx = 1e30f, lmaxx = -1e30f;
-            float lminy = 1e30f, lmaxy = -1e30f;
-#pragma omp for nowait
-            for (int k = 0; k < N; ++k)
-            {
-                const DrawItem *d = &S->draw[k];
-                if (d->x < lminx)
-                    lminx = d->x;
-                if (d->x > lmaxx)
-                    lmaxx = d->x;
-                if (d->y < lminy)
-                    lminy = d->y;
-                if (d->y > lmaxy)
-                    lmaxy = d->y;
-            }
-#pragma omp critical
-            {
-                if (lminx < minx)
-                    minx = lminx;
-                if (lmaxx > maxx)
-                    maxx = lmaxx;
-                if (lminy < miny)
-                    miny = lminy;
-                if (lmaxy > maxy)
-                    maxy = lmaxy;
-            }
-        }
-#else
+#pragma omp parallel for reduction(min : minx, miny) reduction(max : maxx, maxy) schedule(static)
+#endif
         for (int k = 0; k < N; ++k)
         {
             const DrawItem *d = &S->draw[k];
@@ -538,27 +450,27 @@ void cloth_update_and_render(SDL_Renderer *R, ClothState *S, int W, int H, float
             if (d->y > maxy)
                 maxy = d->y;
         }
-#endif
-        float cx2 = 0.5f * (minx + maxx);
-        float cy2 = 0.5f * (miny + maxy);
-        tx_target = (W * 0.5f - cx2) + S->P.panX_px;
-        ty_target = (H * 0.5f - cy2) + S->P.panY_px;
+        float cx2 = 0.5f * (minx + maxx), cy2 = 0.5f * (miny + maxy);
+        float tx_target = (W * 0.5f - cx2) + S->P.panX_px;
+        float ty_target = (H * 0.5f - cy2) + S->P.panY_px;
+        const float alpha = 0.2f;
+        S->tx += alpha * (tx_target - S->tx);
+        S->ty += alpha * (ty_target - S->ty);
     }
     else
     {
-        tx_target = S->P.panX_px;
-        ty_target = S->P.panY_px;
+        const float alpha = 0.2f;
+        S->tx += alpha * (S->P.panX_px - S->tx);
+        S->ty += alpha * (S->P.panY_px - S->ty);
     }
-    const float alpha = 0.2f;
-    S->tx += alpha * (tx_target - S->tx);
-    S->ty += alpha * (ty_target - S->ty);
 
-    // ====== Paso 2: BUCKET SORT O(N) ======
+    // ===== Paso 2: BUCKET SORT O(N) =====
     float range = (zmax - zmin);
     if (range < 1e-6f)
         range = 1e-6f;
     float invRange = (float)(ZBINS - 1) / range;
 
+// 2.1 asigna bin para cada partícula
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -571,24 +483,47 @@ void cloth_update_and_render(SDL_Renderer *R, ClothState *S, int W, int H, float
             b = ZBINS - 1;
         g_bin_idx[k] = b;
     }
+
+    // 2.2 histograma sin atomics: local por hilo + reducción
     memset(g_counts, 0, sizeof(int) * ZBINS);
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (int k = 0; k < N; ++k)
+#pragma omp parallel
     {
-#ifdef _OPENMP
-#pragma omp atomic
-#endif
-        g_counts[g_bin_idx[k]]++;
+        int local[ZBINS];
+        memset(local, 0, sizeof local);
+#pragma omp for nowait schedule(static)
+        for (int k = 0; k < N; ++k)
+            ++local[g_bin_idx[k]];
+#pragma omp critical
+        {
+            for (int b = 0; b < ZBINS; ++b)
+                g_counts[b] += local[b];
+        }
     }
+#else
+    for (int k = 0; k < N; ++k)
+        ++g_counts[g_bin_idx[k]];
+#endif
+
+    // 2.3 prefix sum (secuencial, coste O(ZBINS))
     int sum = 0;
     for (int b = 0; b < ZBINS; ++b)
     {
         g_starts[b] = sum;
-        g_write[b] = sum;
         sum += g_counts[b];
     }
+
+    // 2.4 escribir orden (pequeño atomic capture; coste bajo, puedes mantenerlo)
+    //    Si quisieras 0 atomics, necesitarías un prefix por-hilo por bin (más código).
+    static int *g_write = NULL;
+    static int write_cap = 0;
+    if (write_cap < ZBINS)
+    {
+        g_write = (int *)realloc(g_write, sizeof(int) * ZBINS);
+        write_cap = ZBINS;
+    }
+    memcpy(g_write, g_starts, sizeof(int) * ZBINS);
+
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -600,101 +535,21 @@ void cloth_update_and_render(SDL_Renderer *R, ClothState *S, int W, int H, float
 #pragma omp atomic capture
 #endif
         pos = g_write[b]++;
-        g_order_idx[pos] = k;
+        S->order_idx[pos] = k;
     }
+}
 
-    // ====== Paso 3: DIBUJAR ======
-#ifdef _OPENMP
-    // --- Ruta rápida paralela: generar geometría y un solo draw call ---
-    // (cada hilo llena su bloque; hay barrera implícita al final del for)
-    // 4 vértices y 6 índices por esfera, en orden ya bucketizado (painter's)
-    if (ensure_capacity_geo(N))
-    {
-        // Llenar vértices/índices en paralelo (no hay solapamiento => sin carreras)
-#pragma omp parallel for schedule(static)
-        for (int q = 0; q < N; ++q)
-        {
-            int idx = g_order_idx[q];
-            const DrawItem *d = &S->draw[idx];
-            float x0 = (d->x + S->tx) - d->r;
-            float y0 = (d->y + S->ty) - d->r;
-            float x1 = x0 + 2.0f * d->r;
-            float y1 = y0 + 2.0f * d->r;
-
-            // 4 vértices con mismo color (usa textura de círculo con alfa)
-            SDL_Color col = {d->r8, d->g8, d->b8, d->a8};
-            int v = 4 * q, ii = 6 * q;
-
-            g_verts[v + 0].position.x = x0;
-            g_verts[v + 0].position.y = y0;
-            g_verts[v + 0].color = col;
-            g_verts[v + 0].tex_coord.x = 0.f;
-            g_verts[v + 0].tex_coord.y = 0.f;
-
-            g_verts[v + 1].position.x = x1;
-            g_verts[v + 1].position.y = y0;
-            g_verts[v + 1].color = col;
-            g_verts[v + 1].tex_coord.x = 1.f;
-            g_verts[v + 1].tex_coord.y = 0.f;
-
-            g_verts[v + 2].position.x = x1;
-            g_verts[v + 2].position.y = y1;
-            g_verts[v + 2].color = col;
-            g_verts[v + 2].tex_coord.x = 1.f;
-            g_verts[v + 2].tex_coord.y = 1.f;
-
-            g_verts[v + 3].position.x = x0;
-            g_verts[v + 3].position.y = y1;
-            g_verts[v + 3].color = col;
-            g_verts[v + 3].tex_coord.x = 0.f;
-            g_verts[v + 3].tex_coord.y = 1.f;
-
-            g_index[ii + 0] = v + 0;
-            g_index[ii + 1] = v + 1;
-            g_index[ii + 2] = v + 2;
-            g_index[ii + 3] = v + 2;
-            g_index[ii + 4] = v + 3;
-            g_index[ii + 5] = v + 0;
-        }
-
-        // Un solo draw call. Si el backend no soporta RenderGeometry, caerá en fallback.
-        if (SDL_RenderGeometry(R, S->sprite, g_verts, 4 * N, g_index, 6 * N) != 0)
-        {
-            // Fallback: bucle clásico (debería ser raro)
-            for (int q = 0; q < N; ++q)
-            {
-                const DrawItem *d = &S->draw[g_order_idx[q]];
-                SDL_SetTextureColorMod(S->sprite, d->r8, d->g8, d->b8);
-                SDL_SetTextureAlphaMod(S->sprite, d->a8);
-                float diam = d->r * 2.0f;
-                SDL_FRect dst = {(d->x + S->tx) - d->r, (d->y + S->ty) - d->r, diam, diam};
-                SDL_RenderCopyF(R, S->sprite, NULL, &dst);
-            }
-        }
-    }
-    else
-    {
-        // Memoria insuficiente -> fallback clásico
-        for (int q = 0; q < N; ++q)
-        {
-            const DrawItem *d = &S->draw[g_order_idx[q]];
-            SDL_SetTextureColorMod(S->sprite, d->r8, d->g8, d->b8);
-            SDL_SetTextureAlphaMod(S->sprite, d->a8);
-            float diam = d->r * 2.0f;
-            SDL_FRect dst = {(d->x + S->tx) - d->r, (d->y + S->ty) - d->r, diam, diam};
-            SDL_RenderCopyF(R, S->sprite, NULL, &dst);
-        }
-    }
-#else
-    // --- Ruta secuencial (muchas llamadas): mantiene diferencia a favor del paralelo ---
-    for (int q = 0; q < N; ++q)
-    {
-        const DrawItem *d = &S->draw[g_order_idx[q]];
-        SDL_SetTextureColorMod(S->sprite, d->r8, d->g8, d->b8);
-        SDL_SetTextureAlphaMod(S->sprite, d->a8);
-        float diam = d->r * 2.0f;
-        SDL_FRect dst = {(d->x + S->tx) - d->r, (d->y + S->ty) - d->r, diam, diam};
-        SDL_RenderCopyF(R, S->sprite, NULL, &dst);
-    }
-#endif
+void cloth_destroy(ClothState *S)
+{
+    if (S->sprite)
+        SDL_DestroyTexture(S->sprite);
+    free(S->draw);
+    S->draw = NULL;
+    free(S->depth);
+    S->depth = NULL;
+    free(S->order_idx);
+    S->order_idx = NULL;
+    S->order_cap = 0;
+    // Buffers globales del core se dejan para reuso y se liberan al finalizar el proceso,
+    // o puedes añadir aquí frees si lo prefieres.
 }
