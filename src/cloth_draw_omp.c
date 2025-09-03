@@ -41,6 +41,7 @@ static int ensure_capacity_geo(int N)
     return 1;
 }
 
+// Renderizado paralelo de la tela
 void cloth_render_omp(SDL_Renderer *R, const ClothState *S)
 {
     const int N = S->N;

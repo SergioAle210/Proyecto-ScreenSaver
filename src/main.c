@@ -1,4 +1,3 @@
-// main.c — modo: cloth — SDL2 + (opcional) OpenMP
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

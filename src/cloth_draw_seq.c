@@ -1,6 +1,7 @@
 #include "cloth.h"
 #include <SDL2/SDL.h>
 
+// Renderizado secuencial de la tela
 void cloth_render_seq(SDL_Renderer *R, const ClothState *S)
 {
     const int N = S->N;

@@ -1,4 +1,3 @@
-// cloth_core.c — Lógica común de CLOTH: update, proyección y ordenado
 #include "cloth.h"
 #include <math.h>
 #include <stdlib.h>
