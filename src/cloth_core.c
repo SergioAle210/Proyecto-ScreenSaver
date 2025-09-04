@@ -433,7 +433,7 @@ void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
     float zmin = 1e30f, zmax = -1e30f;
 
 #ifdef _OPENMP
-// Para el update y min/max de profundidad
+// Para calcular la profundidad de cada punto y min/max de profundidad
 #pragma omp parallel for collapse(2) schedule(static) reduction(min : zmin) reduction(max : zmax)
 #endif
     for (int j = 0; j < GY; ++j)
