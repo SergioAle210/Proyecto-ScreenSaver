@@ -12,6 +12,7 @@ static int g_verts_cap = 0;
 static int *g_index = NULL;
 static int g_index_cap = 0;
 
+// Crece amortizadamente para 4 vértices y 6 índices por esfera
 static int ensure_capacity_geo(int N)
 {
     // 4 vértices y 6 índices por esfera
@@ -52,6 +53,7 @@ void cloth_render_omp(SDL_Renderer *R, const ClothState *S)
         return;
     }
 
+    // Se encarga de la preparación de los vértices e índices
 #pragma omp parallel for schedule(static)
     for (int q = 0; q < N; ++q)
     {
@@ -111,6 +113,7 @@ void cloth_render_omp(SDL_Renderer *R, const ClothState *S)
 #endif
 }
 
+// Liberación explícita si quieres soltar buffers de geometry al salir
 void cloth_draw_omp_release(void)
 {
     free(g_verts);

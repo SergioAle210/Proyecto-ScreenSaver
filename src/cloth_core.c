@@ -16,20 +16,21 @@
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
 #endif
 
-// ---------- utilidades ----------
+// Funciones auxiliares: clamp rápido y conversión HSV a RGB para paletas suaves
 static inline float clampf(float v, float a, float b) { return fminf(fmaxf(v, a), b); }
 
 static inline void hsv_to_rgb(float h, float s, float v,
                               unsigned char *R, unsigned char *G, unsigned char *B)
 {
-    h -= floorf(h);
-    float hf = h * 6.0f;
+    h -= floorf(h);      // hue envuelto a [0, 1)
+    float hf = h * 6.0f; // 6 sectores
     int i = (int)floorf(hf);
     float f = hf - (float)i;
     float p = v * (1.0f - s);
     float q = v * (1.0f - f * s);
     float t = v * (1.0f - (1.0f - f) * s);
     float r, g, b;
+    // Esto sirve para interpolación de colores
     switch (i % 6)
     {
     case 0:
@@ -71,6 +72,7 @@ static inline void hsv_to_rgb(float h, float s, float v,
     *B = (unsigned char)(b * 255.f);
 }
 
+// Tipos simples para 3D/2D y rotaciones elementales
 typedef struct
 {
     float x, y, z;
@@ -98,6 +100,8 @@ static inline Vec3 rotY(Vec3 v, float ang)
     r.z = -v.x * s + v.z * c;
     return r;
 }
+
+// Proyección perspectiva con protección frente a denominadores casi cero
 static inline Vec2 project_point(Vec3 v, int W, int H, float fov, float zCam)
 {
     float denom = (v.z - zCam);
@@ -109,7 +113,8 @@ static inline Vec2 project_point(Vec3 v, int W, int H, float fov, float zCam)
     return out;
 }
 
-// ---------- sprite circular (ARGB8888) ----------
+// Genera un sprite ARGB8888 estático con alpha suave y un highlight leve.
+// Se crea en CPU y se sube a la textura con SDL_UpdateTexture.
 static SDL_Texture *make_circle_sprite(SDL_Renderer *R, int radius)
 {
     int d = radius * 2;
@@ -148,12 +153,17 @@ static SDL_Texture *make_circle_sprite(SDL_Renderer *R, int radius)
     return tex;
 }
 
-// ---------- buffers globales para reuso ----------
-static float *g_X = NULL, *g_Y = NULL; // precompute XY
+// Buffers globales para reuso entre frames
+// g_X/g_Y: malla base en mundo.
+// Bucketing: índices de bin y arreglos auxiliares
+static float *g_X = NULL, *g_Y = NULL;
 static int g_xy_cap = 0;
 static int g_last_GX = 0, g_last_GY = 0;
 static float g_last_spanX = 0.f, g_last_spanY = 0.f;
 
+// Sirve para el bucketing de partículas
+// El bucketing es una técnica para agrupar partículas en "bins" o contenedores
+// según su posición en el espacio, facilitando así su manejo y procesamiento.
 #define ZBINS 128
 static int *g_bin_idx = NULL; // N
 static int g_bin_cap = 0;
@@ -161,7 +171,7 @@ static int *g_counts = NULL; // ZBINS
 static int *g_starts = NULL; // ZBINS
 static int *g_write = NULL;  // ZBINS
 
-// ---------- ensure capacities ----------
+// Reserva amortizada para XY; evita realocar cada frame al crecer N
 static int ensure_capacity_xy(int N)
 {
     if (N <= g_xy_cap)
@@ -178,6 +188,8 @@ static int ensure_capacity_xy(int N)
     g_xy_cap = newcap;
     return 1;
 }
+
+// Reserva para estructuras del bucket sort; ZBINS es fijo.
 static int ensure_capacity_bins(int N)
 {
     if (N > g_bin_cap)
@@ -199,6 +211,8 @@ static int ensure_capacity_bins(int N)
         g_write = (int *)calloc(ZBINS, sizeof(int));
     return (g_counts && g_starts && g_write);
 }
+
+// order_idx vive en el estado porque lo consumen ambos backends de render.
 static int ensure_capacity_order(ClothState *S, int N)
 {
     if (N <= S->order_cap)
@@ -214,7 +228,7 @@ static int ensure_capacity_order(ClothState *S, int N)
     return 1;
 }
 
-// ---------- helpers ----------
+// Deriva una malla razonable a partir de N y el aspect ratio de la ventana.
 static void derive_grid_from_N(int N, int W, int H, int *GX, int *GY)
 {
     if (N <= 0)
@@ -234,7 +248,7 @@ static void derive_grid_from_N(int N, int W, int H, int *GX, int *GY)
     *GY = gY;
 }
 
-// ---------- API ----------
+// Inicializa estado, buffers y sprite. Precalcula la malla XY.
 int cloth_init(SDL_Renderer *R, ClothState *S, const ClothParams *P_in, int W, int H)
 {
     if (!R || !S || !P_in || W <= 0 || H <= 0)
@@ -314,6 +328,7 @@ int cloth_init(SDL_Renderer *R, ClothState *S, const ClothParams *P_in, int W, i
     return 0;
 }
 
+// Libera recursos del estado. Los buffers globales se dejan vivos para reuso.
 void cloth_destroy(ClothState *S)
 {
     if (!S)
@@ -329,13 +344,14 @@ void cloth_destroy(ClothState *S)
     S->order_cap = 0;
 }
 
+// Actualiza posiciones proyectadas, colores, bounding box y orden de dibujo.
 void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
 {
     (void)R; // no se usa aquí
     if (!S || W <= 0 || H <= 0)
         return;
 
-    // Ajustes al cambiar tamaño (recrea sprite si el radio base cambia)
+    // Reacciona a cambios de tamaño: recalcula radio base y recrea sprite si hace falta.
     if (W != S->W_last || H != S->H_last)
     {
         float newBase = S->P.baseRadius;
@@ -362,10 +378,12 @@ void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
 
     const int GX = S->P.GX, GY = S->P.GY;
     const int N = GX * GY;
+
+    // Controlan que tan ancha y alta es la malla
     float spanX = (S->P.spanX > 0.f ? S->P.spanX : 2.0f);
     float spanY = (S->P.spanY > 0.f ? S->P.spanY : 2.0f);
 
-    // Recompute XY si cambian grilla o spans
+    // Si cambia la grilla o el span, se recalculan las coordenadas base de la malla.
     if (GX != g_last_GX || GY != g_last_GY || spanX != g_last_spanX || spanY != g_last_spanY)
     {
         if (!ensure_capacity_xy(N))
@@ -403,18 +421,19 @@ void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
     const float spd = (S->P.speed != 0.0f ? S->P.speed : 1.0f);
     const float cs = (S->P.colorSpeed != 0.0f ? S->P.colorSpeed : 0.35f);
 
-    // Centro de perturbación (suave)
+    // Centro animado de la perturbación; mantiene el patrón vivo
     float cx = 0.45f * spanX * sinf(0.9f * spd * t);
     float cy = 0.45f * spanY * cosf(1.2f * spd * t + 0.7f);
 
-    // Onda base + gaussiana
+    // Onda base + gaussiana radial; inv2sig2 evita dividir dentro del bucle.
     const float kx = 2.2f, ky = 1.7f;
     const float inv2sig2 = 1.0f / (2.0f * sig * sig);
 
-    // ---- Paso 1: UPDATE + profundidad (reductions) ----
+    // Update por punto y min/max de profundidad en reducciones.
     float zmin = 1e30f, zmax = -1e30f;
 
 #ifdef _OPENMP
+// Para el update y min/max de profundidad
 #pragma omp parallel for collapse(2) schedule(static) reduction(min : zmin) reduction(max : zmax)
 #endif
     for (int j = 0; j < GY; ++j)
@@ -466,12 +485,13 @@ void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
         }
     }
 
-    // ---- Paso 1.5: centrado/paneo (reducción en bbox) ----
+    // Centrado/paneo (reducción en bbox)
     float tx_target = S->P.panX_px, ty_target = S->P.panY_px;
     if (S->P.autoCenter)
     {
         float minx = 1e30f, maxx = -1e30f, miny = 1e30f, maxy = -1e30f;
 #ifdef _OPENMP
+// Para el bounding box
 #pragma omp parallel
         {
             float lminx = 1e30f, lmaxx = -1e30f, lminy = 1e30f, lmaxy = -1e30f;
@@ -523,7 +543,7 @@ void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
     S->tx += alpha * (tx_target - S->tx);
     S->ty += alpha * (ty_target - S->ty);
 
-    // ---- Paso 2: BUCKET SORT O(N) ----
+    // BUCKET SORT O(N)
     float range = (zmax - zmin);
     if (range < 1e-6f)
         range = 1e-6f;
@@ -544,6 +564,7 @@ void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
 
     memset(g_counts, 0, sizeof(int) * ZBINS);
 #ifdef _OPENMP
+// Para el conteo de bins
 #pragma omp parallel for schedule(static)
 #endif
     for (int k = 0; k < N; ++k)
@@ -563,6 +584,7 @@ void cloth_update(SDL_Renderer *R, ClothState *S, int W, int H, float t)
     }
 
 #ifdef _OPENMP
+// Para escribir posiciones únicas en order_idx
 #pragma omp parallel for schedule(static)
 #endif
     for (int k = 0; k < N; ++k)
